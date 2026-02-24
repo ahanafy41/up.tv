@@ -440,7 +440,7 @@ VideoPlayer = {
     mediaSession = nil,
     
     retryCount = 0,
-    maxRetries = 10,
+    maxRetries = 30,
     isLive = false,
     currentUrl = nil,
     isPlaying = false,
@@ -451,7 +451,9 @@ VideoPlayer = {
     isFullscreen = false,
     
     videoWidth = 0,
-    videoHeight = 0
+    videoHeight = 0,
+    lastPosition = -1,
+    lastPositionTime = 0
 }
 
 function VideoPlayer.init()
@@ -623,6 +625,8 @@ function VideoPlayer.play(index)
     VideoPlayer.currentIndex = index
     VideoPlayer.isSilentRetry = false
     VideoPlayer.isManualStop = false
+    VideoPlayer.lastPosition = -1
+    VideoPlayer.lastPositionTime = 0
     
     local item = VideoPlayer.playlist[index]
     VideoPlayer.currentUrl = item.url 
@@ -957,6 +961,8 @@ function VideoPlayer.setupVideoView()
     if not videoView or not url then return end
     
     VideoPlayer.isManualStop = false -- Fix: State Reset
+    VideoPlayer.lastPosition = -1
+    VideoPlayer.lastPositionTime = 0
     
     if VideoPlayer.widgets.loading then
         VideoPlayer.widgets.loading.setVisibility(View.VISIBLE)
@@ -972,11 +978,24 @@ function VideoPlayer.setupVideoView()
         else
             videoView.setVideoURI(uri)
         end
+
+        videoView.setOnInfoListener(MediaPlayer.OnInfoListener{
+            onInfo = function(mp, what, extra)
+                if what == 701 then -- MEDIA_INFO_BUFFERING_START
+                    if VideoPlayer.widgets.loading then VideoPlayer.widgets.loading.setVisibility(View.VISIBLE) end
+                elseif what == 702 or what == 3 then -- MEDIA_INFO_BUFFERING_END or MEDIA_INFO_VIDEO_RENDERING_START
+                    if VideoPlayer.widgets.loading then VideoPlayer.widgets.loading.setVisibility(View.GONE) end
+                end
+                return true
+            end
+        })
         
         videoView.setOnPreparedListener(MediaPlayer.OnPreparedListener{
             onPrepared = function(mp)
                 VideoPlayer.isPrepared = true
                 VideoPlayer.isSilentRetry = false 
+                VideoPlayer.lastPosition = -1
+                VideoPlayer.lastPositionTime = System.currentTimeMillis()
                 
                 VideoPlayer.videoWidth = mp.getVideoWidth()
                 VideoPlayer.videoHeight = mp.getVideoHeight()
@@ -1047,12 +1066,13 @@ function VideoPlayer.setupVideoView()
 end
 
 function VideoPlayer.attemptRetry()
-    if VideoPlayer.retryCount < VideoPlayer.maxRetries then
+    local max = VideoPlayer.isLive and 50 or VideoPlayer.maxRetries
+    if VideoPlayer.retryCount < max then
         VideoPlayer.retryCount = VideoPlayer.retryCount + 1
         -- Clean: No speak
         if VideoPlayer.retryTimer then VideoPlayer.retryTimer.stop() end
         VideoPlayer.retryTimer = Ticker()
-        VideoPlayer.retryTimer.Period = 800
+        VideoPlayer.retryTimer.Period = 1500
         VideoPlayer.retryTimer.onTick = function()
             VideoPlayer.retryTimer.stop()
             VideoPlayer.setupVideoView()
@@ -1237,6 +1257,22 @@ function VideoPlayer.startTimer()
         if videoView and VideoPlayer.isPlaying and VideoPlayer.widgets.seek then
             pcall(function()
                 local current = videoView.getCurrentPosition()
+
+                -- Watchdog for live streams (and stalled VOD)
+                local now = System.currentTimeMillis()
+                if current == VideoPlayer.lastPosition then
+                    if VideoPlayer.lastPositionTime > 0 and (now - VideoPlayer.lastPositionTime) > 15000 then
+                        -- Stalled for 15 seconds
+                        VideoPlayer.lastPositionTime = now
+                        if not VideoPlayer.isManualStop then
+                            VideoPlayer.attemptRetry()
+                        end
+                    end
+                else
+                    VideoPlayer.lastPosition = current
+                    VideoPlayer.lastPositionTime = now
+                end
+
                 local total = videoView.getDuration()
                 if VideoPlayer.isLive or total <= 0 then total = 100 end 
                 
@@ -1359,11 +1395,13 @@ AudioPlayer = {
     audioManager = activity.getSystemService(Context.AUDIO_SERVICE),
     
     retryCount = 0,
-    maxRetries = 10,
+    maxRetries = 30,
     isLive = false,
     currentUrl = nil,
     isSilentRetry = false,
     isManualStop = false, -- Fix: State Management Flag
+    lastPosition = -1,
+    lastPositionTime = 0,
     
     sleepTargetTime = nil 
 }
@@ -1453,6 +1491,12 @@ function AudioPlayer.init()
             end
         })
         
+        AudioPlayer.player.setOnInfoListener(MediaPlayer.OnInfoListener{
+            onInfo = function(mp, what, extra)
+                return true
+            end
+        })
+
         AudioPlayer.player.setOnErrorListener(MediaPlayer.OnErrorListener{
             onError=function(mp, what, extra)
                 if not AudioPlayer.isManualStop then
@@ -1465,12 +1509,13 @@ function AudioPlayer.init()
 end
 
 function AudioPlayer.attemptRetry()
-    if AudioPlayer.retryCount < AudioPlayer.maxRetries then
+    local max = AudioPlayer.isLive and 50 or AudioPlayer.maxRetries
+    if AudioPlayer.retryCount < max then
         AudioPlayer.retryCount = AudioPlayer.retryCount + 1
         -- Clean: No speak
         if AudioPlayer.retryTimer then AudioPlayer.retryTimer.stop() end
         AudioPlayer.retryTimer = Ticker()
-        AudioPlayer.retryTimer.Period = 800
+        AudioPlayer.retryTimer.Period = 1500
         AudioPlayer.retryTimer.onTick = function()
             AudioPlayer.retryTimer.stop()
             AudioPlayer.playRetry() 
@@ -1574,6 +1619,8 @@ function AudioPlayer.play(index)
     AudioPlayer.currentIndex = index
     AudioPlayer.isSilentRetry = false
     AudioPlayer.isManualStop = false -- Fix: Reset
+    AudioPlayer.lastPosition = -1
+    AudioPlayer.lastPositionTime = 0
     
     local item = AudioPlayer.playlist[index]
     AudioPlayer.currentUrl = item.url 
@@ -1605,6 +1652,8 @@ end
 
 function AudioPlayer.executeLoad()
     AudioPlayer.isManualStop = false -- Fix: State Reset
+    AudioPlayer.lastPosition = -1
+    AudioPlayer.lastPositionTime = 0
     pcall(function()
         local uri = Uri.parse(AudioPlayer.currentUrl)
         local headers = HashMap()
@@ -1617,6 +1666,8 @@ function AudioPlayer.executeLoad()
         onPrepared=function(mp)
             AudioPlayer.retryCount = 0
             AudioPlayer.isSilentRetry = false
+            AudioPlayer.lastPosition = -1
+            AudioPlayer.lastPositionTime = System.currentTimeMillis()
             
             mp.start()
             AudioPlayer.startTimer()
@@ -1772,6 +1823,22 @@ function AudioPlayer.startTimer()
 
         if AudioPlayer.player and AudioPlayer.player.isPlaying() and AudioPlayer.widgets.seek then
             local current = AudioPlayer.player.getCurrentPosition()
+
+            -- Watchdog for live streams (and stalled VOD)
+            local now = System.currentTimeMillis()
+            if current == AudioPlayer.lastPosition then
+                if AudioPlayer.lastPositionTime > 0 and (now - AudioPlayer.lastPositionTime) > 15000 then
+                    -- Stalled for 15 seconds
+                    AudioPlayer.lastPositionTime = now
+                    if not AudioPlayer.isManualStop then
+                         AudioPlayer.attemptRetry()
+                    end
+                end
+            else
+                AudioPlayer.lastPosition = current
+                AudioPlayer.lastPositionTime = now
+            end
+
             local total = AudioPlayer.player.getDuration()
             if AudioPlayer.isLive or total <= 0 then total = 100 end 
             
