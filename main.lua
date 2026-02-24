@@ -2841,6 +2841,42 @@ function resumeSeriesWithContext(seriesId, episodeId, seriesName)
     end)
 end
 
+AccountInfo = nil
+
+function fetchAccountInfo(callback)
+    if not HOST or HOST == "" then return end
+    local url = HOST .. "/player_api.php?username=" .. USER .. "&password=" .. PASS
+    Http.get(url, function(code, body)
+        if code == 200 then
+            local data = decodeRaw(body)
+            if data and data.user_info then
+                AccountInfo = data.user_info
+                if callback then callback() end
+            end
+        end
+    end)
+end
+
+function getExpiryText(exp_date)
+    if not exp_date or exp_date == "null" or exp_date == "" then
+        return "غير محدود"
+    end
+    local ts = tonumber(exp_date)
+    if not ts then return "غير معروف" end
+
+    local dateStr = os.date("%Y-%m-%d", ts)
+    local diff = ts - os.time()
+    local days = math.floor(diff / 86400)
+
+    if days < 0 then
+        return "منتهي (" .. dateStr .. ")"
+    elseif days == 0 then
+        return "ينتهي اليوم (" .. dateStr .. ")"
+    else
+        return dateStr .. " (باقي " .. days .. " يوم)"
+    end
+end
+
 function main()
     local favCount = #FavoritesManager.getAll() + #FavoritesManager.getAllSeries()
     local histCount = #HistoryManager.getAll()
@@ -2879,6 +2915,34 @@ function main()
                     onClick=function() showPlayerSettings() end
                 }
             },
+
+            -- Subscription Card
+            (AccountInfo and {
+                LinearLayout, orientation="vertical", layout_width="fill", padding="16dp",
+                layout_marginBottom="24dp", id="subs_card",
+                focusable=true,
+                contentDescription="معلومات الاشتراك: الحالة " .. (AccountInfo.status or "Active") ..
+                                   "، الانتهاء في " .. getExpiryText(AccountInfo.exp_date) ..
+                                   "، الأجهزة المتصلة " .. (AccountInfo.active_cons or "0") .. " من أصل " .. (AccountInfo.max_connections or "0"),
+                {
+                    LinearLayout, orientation="horizontal", gravity="center_vertical", layout_marginBottom="8dp", importantForAccessibility=2,
+                    { TextView, text="💳", textSize="20sp", layout_marginRight="8dp", importantForAccessibility=2 },
+                    { TextView, text="معلومات الاشتراك", textSize="16sp", Typeface=Typeface.DEFAULT_BOLD, textColor=COL_ACCENT_START, importantForAccessibility=2 },
+                },
+                {
+                    LinearLayout, orientation="horizontal", layout_width="fill", importantForAccessibility=2,
+                    {
+                        LinearLayout, orientation="vertical", layout_weight="1", importantForAccessibility=2,
+                        { TextView, text="الحالة: " .. (AccountInfo.status or "Active"), textColor=COL_TEXT_PRI, textSize="13sp", importantForAccessibility=2 },
+                        { TextView, text="الانتهاء: " .. getExpiryText(AccountInfo.exp_date), textColor=COL_TEXT_PRI, textSize="13sp", importantForAccessibility=2 },
+                    },
+                    {
+                        LinearLayout, orientation="vertical", gravity="right", importantForAccessibility=2,
+                        { TextView, text="الأجهزة", textColor=COL_TEXT_SEC, textSize="11sp", importantForAccessibility=2 },
+                        { TextView, text=(AccountInfo.active_cons or "0") .. " / " .. (AccountInfo.max_connections or "0"), textColor=COL_TEXT_PRI, textSize="15sp", Typeface=Typeface.DEFAULT_BOLD, importantForAccessibility=2 },
+                    }
+                }
+            } or { View, layout_width="0", layout_height="0" }),
 
             -- Hero & Categories
             {
@@ -2976,6 +3040,7 @@ function main()
                     setData("xt_user", nil)
                     setData("xt_pass", nil)
                     HOST, USER, PASS = nil, nil, nil
+                    AccountInfo = nil
                     showLogin()
                 end
             },
@@ -2997,6 +3062,14 @@ function main()
     if btn_fav then btn_fav.setBackground(getClickableDrawable(COL_SURFACE, COL_SURFACE_PRESS, 24)) end
     if btn_hist then btn_hist.setBackground(getClickableDrawable(COL_SURFACE, COL_SURFACE_PRESS, 24)) end
     if btn_myseries then btn_myseries.setBackground(getClickableDrawable(COL_SURFACE, COL_SURFACE_PRESS, 24)) end
+
+    if subs_card then
+        local gd = GradientDrawable()
+        gd.setColor(Color.parseColor(COL_SURFACE))
+        gd.setCornerRadius(24)
+        gd.setStroke(2, Color.parseColor(COL_ACCENT_START))
+        subs_card.setBackground(gd)
+    end
 
     for _, item in ipairs(continueWatchingList) do
         local mins = math.floor(item.position / 60000)
@@ -3111,12 +3184,18 @@ function showLogin()
             setData("xt_pass", p); PASS = p
             speak("تم تسجيل الدخول بنجاح")
             main()
+            fetchAccountInfo(function()
+                main()
+            end)
         end
     })
 end
 
 if HOST and USER and HOST ~= "" then 
-    main() 
+    main()
+    fetchAccountInfo(function()
+        main()
+    end)
 else 
     showLogin() 
 end
