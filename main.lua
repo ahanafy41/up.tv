@@ -2128,10 +2128,15 @@ function preparePlaylist(data, type, seriesId, seriesName)
 end
 
 function playContent(playlist, startIndex)
-    if PLAYER_MODE == "video" then
-        VideoPlayer.loadList(playlist, startIndex)
+    local alwaysDefault = getData("xt_always_default") == "true"
+    if alwaysDefault then
+        if PLAYER_MODE == "video" then
+            VideoPlayer.loadList(playlist, startIndex)
+        else
+            AudioPlayer.loadList(playlist, startIndex)
+        end
     else
-        AudioPlayer.loadList(playlist, startIndex)
+        showPlayModeSelector(playlist, startIndex)
     end
 end
 
@@ -2200,7 +2205,7 @@ function showFavorites()
             if selected.type == "full_series" then
                 getSeriesEpisodes(selected.data.series_id, selected.data.name)
             else
-                showPlayModeSelector({selected.data}, 1)
+                playContent({selected.data}, 1)
             end
         end
     end)
@@ -2347,7 +2352,7 @@ function showHistory()
             if item.type == "series" and item.series_id then
                 resumeSeriesWithContext(item.series_id, item.id, item.series_name)
             else
-                showPlayModeSelector({item}, 1)
+                playContent({item}, 1)
             end
         end
     end)
@@ -2534,7 +2539,7 @@ function showSearchResults(results)
             
             playListItem.url = HOST .. baseUrl .. USER .. "/" .. PASS .. "/" .. item.stream_id .. "." .. item.container_extension
             
-            showPlayModeSelector({playListItem}, 1)
+            playContent({playListItem}, 1)
         end
     end)
     dlg.setNeutralButton("🏠 الرئيسية", function() main() end)
@@ -2558,7 +2563,7 @@ function getLiveChannels(cat_id)
         dlg.setItems(names)
         dlg.setOnItemClickListener(function(l,v,p,i) 
             dlg.dismiss()
-            showPlayModeSelector(playlist, i) 
+            playContent(playlist, i)
         end)
         dlg.setNeutralButton("🏠 الرئيسية", function() main() end)
         dlg.setNegativeButton("🔙 رجوع", nil)
@@ -2599,7 +2604,7 @@ function getMovies(cat_id)
         dlg.setItems(names)
         dlg.setOnItemClickListener(function(l,v,p,i) 
             dlg.dismiss()
-            showPlayModeSelector(playlist, i) 
+            playContent(playlist, i)
         end)
         dlg.setNeutralButton("🏠 الرئيسية", function() main() end)
         dlg.setNegativeButton("🔙 رجوع", nil)
@@ -2637,7 +2642,7 @@ function showEpisodesList(episodes_data, seriesId, seriesName)
     dlg.setItems(names)
     dlg.setOnItemClickListener(function(l,v,p,i) 
         dlg.dismiss()
-        showPlayModeSelector(playlist, i)
+        playContent(playlist, i)
     end)
     dlg.setNeutralButton("🏠 الرئيسية", function() main() end)
     dlg.setNegativeButton("🔙 رجوع", nil)
@@ -2742,7 +2747,7 @@ function playAllSeriesEpisodes(episodesData, seasons, seriesId, seriesName)
     
     if #allEpisodes > 0 then
         speak("جاري تشغيل " .. #allEpisodes .. " حلقة")
-        showPlayModeSelector(allEpisodes, 1)
+        playContent(allEpisodes, 1)
     else
         speak("لا توجد حلقات")
     end
@@ -2826,10 +2831,13 @@ end
 
 function showPlayerSettings()
     local currentModeText = PLAYER_MODE == "video" and "📺 فيديو" or "🎧 صوت"
+    local alwaysDefault = getData("xt_always_default") == "true"
+    local alwaysDefaultText = alwaysDefault and "✅ نعم" or "❌ لا"
     
     local options = {
         "🎧 تعيين الوضع الافتراضي: صوت",
         "📺 تعيين الوضع الافتراضي: فيديو",
+        "🔄 تعيين كمشغل دائم: " .. alwaysDefaultText,
         "ℹ️ الوضع الحالي: " .. currentModeText
     }
     
@@ -2841,10 +2849,17 @@ function showPlayerSettings()
             PLAYER_MODE = "audio"
             setData(PLAYER_MODE_KEY, "audio")
             speak("تم تعيين الوضع الافتراضي: صوت")
+            showPlayerSettings()
         elseif i == 2 then
             PLAYER_MODE = "video"
             setData(PLAYER_MODE_KEY, "video")
             speak("تم تعيين الوضع الافتراضي: فيديو")
+            showPlayerSettings()
+        elseif i == 3 then
+            local newVal = not alwaysDefault
+            setData("xt_always_default", tostring(newVal))
+            speak(newVal and "تم تفعيل المشغل الدائم" or "تم إلغاء المشغل الدائم")
+            showPlayerSettings()
         end
     end)
     dlg.setNeutralButton("🏠 الرئيسية", function() main() end)
@@ -2904,7 +2919,7 @@ function resumeSeriesWithContext(seriesId, episodeId, seriesName)
             end
         end
 
-        showPlayModeSelector(allEpisodes, startIndex)
+        playContent(allEpisodes, startIndex)
     end)
 end
 
@@ -3167,7 +3182,7 @@ function main()
                if item.type == "series" and item.series_id then
                    resumeSeriesWithContext(item.series_id, item.id, item.series_name)
                else
-                   showPlayModeSelector({item}, 1)
+                   playContent({item}, 1)
                end
             end,
             
