@@ -89,350 +89,6 @@ function speak(text)
     end
 end
 
-function speakSubtitle(text)
-    if TTSManager.isInitialized and text and text ~= "" then
-        pcall(function()
-            -- Simple Audio Ducking: request transient focus to duck others
-            local am = activity.getSystemService(Context.AUDIO_SERVICE)
-            if am then
-                if Build.VERSION.SDK_INT >= 21 then
-                    am.requestAudioFocus(nil, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
-                else
-                    am.requestAudioFocus(nil, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
-                end
-            end
-
-            -- Use QUEUE_ADD for subtitles to avoid cutting off fast sentences
-            local params = HashMap()
-            params.put(TextToSpeech.Engine.KEY_PARAM_STREAM, tostring(AudioManager.STREAM_MUSIC))
-
-            if Build.VERSION.SDK_INT >= 21 then
-                -- Set a listener to abandon focus when done
-                TTSManager.tts.setOnUtteranceProgressListener(luajava.override(TextToSpeech.OnUtteranceProgressListener, {
-                    onStart = function(id) end,
-                    onDone = function(id)
-                        if id:find("sub_") then
-                             am.abandonAudioFocus(nil)
-                        end
-                    end,
-                    onError = function(id) am.abandonAudioFocus(nil) end
-                }))
-                TTSManager.tts.speak(text, TextToSpeech.QUEUE_ADD, nil, "sub_"..os.time())
-            else
-                TTSManager.tts.speak(text, TextToSpeech.QUEUE_ADD, params)
-            end
-        end)
-    end
-end
-
-TTSManager.init()
-
-SubtitleManager = {
-    currentSubtitles = {},
-    isEnabled = getData("xt_voice_subtitles", "false") == "true",
-    isSearching = false,
-    lastSpeakTime = 0,
-    lastSubIndex = 0
-}
-
-function SubtitleManager.clear()
-    SubtitleManager.currentSubtitles = {}
-    SubtitleManager.lastSubIndex = 0
-end
-
-function SubtitleManager.parseSRT(srtContent)
-    local subs = {}
-    -- Clean SRT content from Windows line endings and extra spaces
-    srtContent = srtContent:gsub("\r\n", "\n"):gsub("\r", "\n") .. "\n\n"
-
-    -- Try matching the common block pattern
-    for block in srtContent:gmatch("(%d+\n%d%d:%d%d:%d%d[,%.]%d%d%d %-%-> %d%d:%d%d:%d%d[,%.]%d%d%d.-)\n\n") do
-        local startH, startM, startS, startMs, endH, endM, endS, endMs =
-            block:match("(%d%d):(%d%d):(%d%d)[,%.](%d%d%d) %-%-> (%d%d):(%d%d):(%d%d)[,%.](%d%d%d)")
-
-        if startH then
-            local startTime = (tonumber(startH) * 3600 + tonumber(startM) * 60 + tonumber(startS)) * 1000 + tonumber(startMs)
-            local endTime = (tonumber(endH) * 3600 + tonumber(endM) * 60 + tonumber(endS)) * 1000 + tonumber(endMs)
-
-            -- Extract text part (everything after the timestamp line)
-            local text = block:gsub("%d+\n%d%d:%d%d:%d%d[,%.]%d%d%d %-%-> %d%d:%d%d:%d%d[,%.]%d%d%d\n", "")
-            text = text:gsub("<[^>]+>", ""):gsub("\n", " "):gsub("^%s*(.-)%s*$", "%1")
-
-            if text ~= "" then
-                table.insert(subs, {
-                    start = startTime,
-                    ["end"] = endTime,
-                    text = text
-                })
-            end
-        end
-    end
-
-    return subs
-end
-
-function SubtitleManager.cleanName(name)
-    if not name then return "" end
-    -- Remove quality tags, years, and common prefixes
-    local n = name:gsub("%[.-%]", ""):gsub("%(.-%)", "")
-    n = n:gsub("%d%d%d%dp", ""):gsub("1080p", ""):gsub("720p", ""):gsub("480p", "")
-    n = n:gsub("BluRay", ""):gsub("WEB%-DL", ""):gsub("HDRip", ""):gsub("x264", ""):gsub("x265", "")
-    n = n:gsub("H%.264", ""):gsub("H%.265", ""):gsub("AAC", ""):gsub("DTS", "")
-    n = n:gsub("[%._%-]", " ")
-    -- Remove Arabic common markers
-    n = n:gsub("فيلم", ""):gsub("مسلسل", ""):gsub("مترجم", ""):gsub("كامل", ""):gsub("حصريا", "")
-    -- Remove year if present (4 digits)
-    n = n:gsub("%d%d%d%d", "")
-    -- Clean multiple spaces
-    n = n:gsub("%s+", " "):gsub("^%s*(.-)%s*$", "%1")
-    return n
-end
-
-function SubtitleManager.search(query, itemType)
-    if not SubtitleManager.isEnabled then return end
-
-    SubtitleManager.isSearching = true
-    SubtitleManager.clear()
-
-    local cleanQuery = SubtitleManager.cleanName(query)
-    if cleanQuery == "" then cleanQuery = query end
-
-    speak("جاري البحث عن ترجمة لـ " .. cleanQuery)
-
-    -- Normalizing the name further: if it contains Arabic, try to find an English equivalent if possible
-    -- Or just strip common IPTV junk that might remain
-    cleanQuery = cleanQuery:gsub("SUBTITLE", ""):gsub("ARABIC", ""):gsub("VOICE", "")
-
-    SubtitleManager.activeQuery = query
-    SubtitleManager.activeCleanQuery = cleanQuery
-
-    if itemType == "movie" or not (cleanQuery:lower():find("s%d%de%d%d")) then
-        SubtitleManager.searchYTS(cleanQuery)
-    else
-        SubtitleManager.searchSubtitleCat(cleanQuery, 1)
-    end
-end
-
-function SubtitleManager.searchSubtitleCat(searchTerm, attempt)
-    local encoded = ""
-    pcall(function() encoded = URLEncoder.encode(searchTerm, "UTF-8") end)
-    if encoded == "" then encoded = searchTerm:gsub(" ", "%%20") end
-
-    -- SubtitleCat search with Arabic filter
-    local url = "https://www.subtitlecat.com/index.php?search=" .. encoded .. "&l=ar"
-    local headers = HashMap()
-    headers.put("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-
-    Http.get(url, headers, function(code, body)
-        if code == 200 then
-            -- Find the best Arabic match by looking for keywords in the link text or title
-            -- Pattern matches: <a href="subs/XXX/name.html">Name</a>
-            local found = false
-            for path, title in body:gmatch('href="?/?(subs/[^"]+%.html)"?[^>]*>(.-)</a>') do
-                local lowerTitle = title:lower()
-                local lowerSearch = searchTerm:lower()
-
-                -- Check if title matches or contains Arabic indicators
-                if lowerTitle:find("arabic") or lowerTitle:find("ara") or lowerTitle:find(lowerSearch) then
-                    SubtitleManager.downloadSubtitleCat(path)
-                    found = true
-                    break
-                end
-            end
-
-            if not found then
-                -- Fallback to first link if any
-                local subPath = body:match('href="?/?(subs/[^"]+%.html)"?')
-                if subPath then
-                    SubtitleManager.downloadSubtitleCat(subPath)
-                elseif attempt == 1 then
-                    SubtitleManager.searchSubtitleCat(SubtitleManager.activeQuery, 2)
-                else
-                    speak("لم يتم العثور على ترجمة في المصدر الثاني")
-                    SubtitleManager.isSearching = false
-                end
-            end
-        elseif attempt == 1 then
-            SubtitleManager.searchSubtitleCat(SubtitleManager.activeQuery, 2)
-        else
-            speak("فشل الاتصال بالمصدر الثاني")
-            SubtitleManager.isSearching = false
-        end
-    end)
-end
-
-function SubtitleManager.searchYTS(searchTerm)
-    local encoded = ""
-    pcall(function() encoded = URLEncoder.encode(searchTerm, "UTF-8") end)
-    local url = "https://yts-subs.com/search/" .. encoded
-    local headers = HashMap()
-    headers.put("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-
-    Http.get(url, headers, function(code, body)
-        if code == 200 then
-            -- Match movie path from search results
-            local moviePath = body:match('href="(/movie%-imdb/[^"]+)"')
-            if moviePath then
-                Http.get("https://yts-subs.com" .. moviePath, headers, function(c, b)
-                    if c == 200 then
-                        -- Highly specific Arabic YIFY match
-                        local subPath = b:match('href="(/subtitles/[^"]+%-arabic%-yify%-[^"]+)"')
-                            or b:match('href="(/subtitles/[^"]+)"[^>]*>Arabic<')
-                            or b:match('>Arabic<.-href="(/subtitles/[^"]+)"')
-
-                        if subPath then
-                            SubtitleManager.downloadYTS(subPath)
-                        else
-                            -- Fallback to SubtitleCat
-                            SubtitleManager.searchSubtitleCat(SubtitleManager.activeCleanQuery, 1)
-                        end
-                    else
-                        SubtitleManager.searchSubtitleCat(SubtitleManager.activeCleanQuery, 1)
-                    end
-                end)
-            else
-                -- Try SubtitleCat immediately if no YTS movie match
-                SubtitleManager.searchSubtitleCat(SubtitleManager.activeCleanQuery, 1)
-            end
-        else
-            SubtitleManager.searchSubtitleCat(SubtitleManager.activeCleanQuery, 1)
-        end
-    end)
-end
-
-function SubtitleManager.downloadYTS(path)
-    local fullUrl = "https://yts-subs.com" .. path
-    local headers = HashMap()
-    headers.put("User-Agent", "Mozilla/5.0")
-
-    Http.get(fullUrl, headers, function(code, body)
-        if code == 200 then
-            local dataLink = body:match('data%-link="([^"]+)"')
-            if dataLink then
-                local downloadUrl = ""
-                pcall(function() downloadUrl = String(Base64.decode(dataLink, Base64.DEFAULT)).trim() end)
-                if downloadUrl ~= "" then
-                    speak("تم العثور على الترجمة، جاري التحميل...")
-                    if downloadUrl:find("%.zip") then
-                        SubtitleManager.searchSubtitleCat(SubtitleManager.activeCleanQuery, 1)
-                    else
-                        SubtitleManager.downloadDirect(downloadUrl)
-                    end
-                else
-                    SubtitleManager.isSearching = false
-                end
-            else
-                SubtitleManager.isSearching = false
-            end
-        else
-            SubtitleManager.isSearching = false
-        end
-    end)
-end
-
-function SubtitleManager.decompressGzip(data)
-    local success, result = pcall(function()
-        local bytes = luajava.new("byte[]", #data)
-        for i=1, #data do
-            bytes[i-1] = data:sub(i,i):byte()
-        end
-        local bis = ByteArrayInputStream(bytes)
-        local gis = GZIPInputStream(bis)
-        local bos = ByteArrayOutputStream()
-        local buffer = luajava.new("byte[]", 4096)
-        local len = gis.read(buffer)
-        while len ~= -1 do
-            bos.write(buffer, 0, len)
-            len = gis.read(buffer)
-        end
-        gis.close()
-        return bos.toString("UTF-8")
-    end)
-    return success and result or nil
-end
-
-
-function SubtitleManager.downloadSubtitleCat(path)
-    if not path:find("^/") then path = "/" .. path end
-    local fullUrl = "https://www.subtitlecat.com" .. path
-    local headers = HashMap()
-    headers.put("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-
-    Http.get(fullUrl, headers, function(code, body)
-        if code == 200 then
-            -- Patterns found in real SubtitleCat HTML:
-            -- 1. id="download_ar" (best)
-            -- 2. /subs/NNN/name-ar.srt
-            -- 3. /download/NNN/name.srt
-            local downloadLink = body:match('id="download_ar"[^>]+href="?/?([^"]+%.srt)"?')
-                or body:match('href="?/?(subs/[^"]+%-ar%.srt)"?')
-                or body:match('href="?/?(subs/[^"]+%-arabic%.srt)"?')
-                or body:match('href="?/?(download/[^"]+%.srt)"?')
-
-            if downloadLink then
-                if not downloadLink:find("^/") then downloadLink = "/" .. downloadLink end
-                SubtitleManager.downloadDirect("https://www.subtitlecat.com" .. downloadLink)
-            else
-                -- Try to find any green download link that looks like Arabic
-                downloadLink = body:match('class="green%-link"[^>]+href="?/?([^"]+%.srt)"?')
-                if downloadLink then
-                    if not downloadLink:find("^/") then downloadLink = "/" .. downloadLink end
-                    SubtitleManager.downloadDirect("https://www.subtitlecat.com" .. downloadLink)
-                else
-                    speak("لا يوجد رابط تحميل متاح لهذه النسخة")
-                    SubtitleManager.isSearching = false
-                end
-            end
-        else
-            SubtitleManager.isSearching = false
-        end
-    end)
-end
-
-function SubtitleManager.downloadDirect(url)
-    local headers = HashMap()
-    headers.put("User-Agent", "Mozilla/5.0")
-
-    Http.get(url, headers, function(code, body)
-        SubtitleManager.isSearching = false
-        if code == 200 then
-            local content = body
-            if body:sub(1,2) == "\31\139" then
-                content = SubtitleManager.decompressGzip(body) or body
-            end
-            SubtitleManager.currentSubtitles = SubtitleManager.parseSRT(content)
-            if #SubtitleManager.currentSubtitles > 0 then
-                speak("تم تحميل الترجمة بنجاح.")
-            else
-                speak("ملف الترجمة فارغ أو غير صالح")
-            end
-        end
-    end)
-end
-
-function SubtitleManager.checkAndSpeak(currentPos)
-    if not SubtitleManager.isEnabled or #SubtitleManager.currentSubtitles == 0 then return end
-
-    -- Optimization: start searching from last index
-    for i = SubtitleManager.lastSubIndex + 1, #SubtitleManager.currentSubtitles do
-        local sub = SubtitleManager.currentSubtitles[i]
-        if currentPos >= sub.start and currentPos <= sub["end"] then
-            if i ~= SubtitleManager.lastSubIndex then
-                speakSubtitle(sub.text)
-                SubtitleManager.lastSubIndex = i
-            end
-            break
-        elseif currentPos < sub.start then
-            -- Since subs are sorted, we can stop
-            break
-        end
-    end
-
-    -- If user seeks back, reset index
-    if SubtitleManager.lastSubIndex > 0 and currentPos < SubtitleManager.currentSubtitles[SubtitleManager.lastSubIndex].start then
-        SubtitleManager.lastSubIndex = 0
-    end
-end
 
 local HOST = getData("xt_host")
 local USER = getData("xt_user")
@@ -895,54 +551,6 @@ function VideoPlayer.updateMetadata()
 end
 
 function VideoPlayer.sendNotification(title, isPlaying)
-    local ns = Context.NOTIFICATION_SERVICE
-    local nm = activity.getSystemService(ns)
-    local channelId = "xtream_final_ch"
-    
-    if Build.VERSION.SDK_INT >= 26 then
-        local channel = NotificationChannel(channelId, "Xtream Player", 3)
-        nm.createNotificationChannel(channel)
-    end
-    
-    local builder = Notification.Builder(activity)
-    if Build.VERSION.SDK_INT >= 26 then builder.setChannelId(channelId) end
-    
-    builder.setContentTitle("Xtream Video")
-    builder.setContentText(title)
-    builder.setSmallIcon(android.R.drawable.ic_media_play)
-    builder.setLargeIcon(BitmapFactory.decodeResource(activity.getResources(), android.R.drawable.ic_media_play))
-    builder.setOngoing(isPlaying)
-    builder.setShowWhen(false)
-    builder.setVisibility(1) 
-    
-    local pFlag = 0
-    if Build.VERSION.SDK_INT >= 31 then pFlag = 67108864 end 
-    
-    local intent = Intent(activity, activity.getClass())
-    local pendingIntent = PendingIntent.getActivity(activity, 0, intent, pFlag)
-    builder.setContentIntent(pendingIntent)
-    
-    local iPrev = Intent(ACTION_PREV); local pPrev = PendingIntent.getBroadcast(activity, 1, iPrev, pFlag)
-    builder.addAction(android.R.drawable.ic_media_previous, "السابق", pPrev)
-    
-    local iPlay = Intent(ACTION_PLAY_PAUSE); local pPlay = PendingIntent.getBroadcast(activity, 2, iPlay, pFlag)
-    local playIcon = isPlaying and android.R.drawable.ic_media_pause or android.R.drawable.ic_media_play
-    builder.addAction(playIcon, "Play", pPlay)
-    
-    local iNext = Intent(ACTION_NEXT); local pNext = PendingIntent.getBroadcast(activity, 3, iNext, pFlag)
-    builder.addAction(android.R.drawable.ic_media_next, "التالي", pNext)
-    
-    local iClose = Intent(ACTION_CLOSE); local pClose = PendingIntent.getBroadcast(activity, 4, iClose, pFlag)
-    builder.addAction(android.R.drawable.ic_menu_close_clear_cancel, "إغلاق", pClose)
-    
-    pcall(function()
-        local style = Notification.MediaStyle()
-        if VideoPlayer.mediaSession then style.setMediaSession(VideoPlayer.mediaSession.getSessionToken()) end
-        style.setShowActionsInCompactView(0, 1, 2)
-        builder.setStyle(style)
-    end)
-    
-    nm.notify(VideoPlayer.notification_id, builder.build())
 end
 
 function VideoPlayer.cancelNotification()
@@ -1018,10 +626,6 @@ function VideoPlayer.play(index)
     HistoryManager.add(item)
     
     speak("جاري تحميل الفيديو: " .. item.name)
-
-    if not VideoPlayer.isLive and item.type ~= "live" then
-        SubtitleManager.search(item.name, item.type)
-    end
 
     VideoPlayer.updateMetadata()
     VideoPlayer.updatePlaybackState(PlaybackState.STATE_PLAYING)
@@ -1512,7 +1116,6 @@ function VideoPlayer.togglePlay()
 end
 
 function VideoPlayer.stop()
-    SubtitleManager.clear()
     VideoPlayer.setDialogOrientation(1)
     
     if VideoPlayer.widgets.videoView then
@@ -1666,8 +1269,6 @@ function VideoPlayer.startTimer()
                 
                 VideoPlayer.widgets.seek.setMax(total)
                 VideoPlayer.widgets.seek.setProgress(current)
-                
-                SubtitleManager.checkAndSpeak(current)
 
                 local cMins = math.floor(current/60000)
                 local cSecs = math.floor((current%60000)/1000)
@@ -1929,54 +1530,6 @@ function AudioPlayer.abandonAudioFocus()
 end
 
 function AudioPlayer.sendNotification(title, isPlaying)
-    local ns = Context.NOTIFICATION_SERVICE
-    local nm = activity.getSystemService(ns)
-    local channelId = "xtream_final_ch"
-    
-    if Build.VERSION.SDK_INT >= 26 then
-        local channel = NotificationChannel(channelId, "Xtream Player", 3)
-        nm.createNotificationChannel(channel)
-    end
-    
-    local builder = Notification.Builder(activity)
-    if Build.VERSION.SDK_INT >= 26 then builder.setChannelId(channelId) end
-    
-    builder.setContentTitle("Xtream Audio")
-    builder.setContentText(title)
-    builder.setSmallIcon(android.R.drawable.ic_media_play)
-    builder.setLargeIcon(BitmapFactory.decodeResource(activity.getResources(), android.R.drawable.ic_media_play))
-    builder.setOngoing(isPlaying)
-    builder.setShowWhen(false)
-    builder.setVisibility(1)
-    
-    local pFlag = 0
-    if Build.VERSION.SDK_INT >= 31 then pFlag = 67108864 end 
-    
-    local intent = Intent(activity, activity.getClass())
-    local pendingIntent = PendingIntent.getActivity(activity, 0, intent, pFlag)
-    builder.setContentIntent(pendingIntent)
-    
-    local iPrev = Intent(ACTION_PREV); local pPrev = PendingIntent.getBroadcast(activity, 1, iPrev, pFlag)
-    builder.addAction(android.R.drawable.ic_media_previous, "السابق", pPrev)
-    
-    local iPlay = Intent(ACTION_PLAY_PAUSE); local pPlay = PendingIntent.getBroadcast(activity, 2, iPlay, pFlag)
-    local playIcon = isPlaying and android.R.drawable.ic_media_pause or android.R.drawable.ic_media_play
-    builder.addAction(playIcon, "Play", pPlay)
-    
-    local iNext = Intent(ACTION_NEXT); local pNext = PendingIntent.getBroadcast(activity, 3, iNext, pFlag)
-    builder.addAction(android.R.drawable.ic_media_next, "التالي", pNext)
-    
-    local iClose = Intent(ACTION_CLOSE); local pClose = PendingIntent.getBroadcast(activity, 4, iClose, pFlag)
-    builder.addAction(android.R.drawable.ic_menu_close_clear_cancel, "إغلاق", pClose)
-    
-    pcall(function()
-        local style = Notification.MediaStyle()
-        if AudioPlayer.mediaSession then style.setMediaSession(AudioPlayer.mediaSession.getSessionToken()) end
-        style.setShowActionsInCompactView(0, 1, 2)
-        builder.setStyle(style)
-    end)
-    
-    nm.notify(AudioPlayer.notification_id, builder.build())
 end
 
 function AudioPlayer.cancelNotification()
@@ -2025,10 +1578,6 @@ function AudioPlayer.play(index)
     AudioPlayer.updateFavoriteButton()
     
     speak("تحميل: " .. item.name)
-
-    if not AudioPlayer.isLive and item.type ~= "live" then
-        SubtitleManager.search(item.name, item.type)
-    end
 
     AudioPlayer.updateMetadata()
     AudioPlayer.updatePlaybackState(PlaybackState.STATE_PLAYING)
@@ -2108,7 +1657,6 @@ function AudioPlayer.togglePlay()
 end
 
 function AudioPlayer.stop()
-    SubtitleManager.clear()
     if AudioPlayer.player then
         if AudioPlayer.player.isPlaying() then
             local item = AudioPlayer.getCurrentItem()
@@ -2239,8 +1787,6 @@ function AudioPlayer.startTimer()
             
             AudioPlayer.widgets.seek.setMax(total)
             AudioPlayer.widgets.seek.setProgress(current)
-            
-            SubtitleManager.checkAndSpeak(current)
 
             local t_str = AudioPlayer.isLive and "Live Stream" or string.format("%02d:%02d", math.floor(total/60000), math.floor((total%60000)/1000))
             AudioPlayer.widgets.time.setText(string.format("%02d:%02d / %s", math.floor(current/60000), math.floor((current%60000)/1000), t_str))
@@ -2300,6 +1846,8 @@ function AudioPlayer.updateFavoriteButton()
         end
     end
 end
+
+TTSManager.init()
 
 function AudioPlayer.toggleFavorite()
     local item = AudioPlayer.getCurrentItem()
@@ -3230,14 +2778,11 @@ function showPlayerSettings()
     local currentModeText = PLAYER_MODE == "video" and "📺 فيديو" or "🎧 صوت"
     local alwaysDefault = getData("xt_always_default") == "true"
     local alwaysDefaultText = alwaysDefault and "✅ نعم" or "❌ لا"
-    local voiceSubs = getData("xt_voice_subtitles", "false") == "true"
-    local voiceSubsText = voiceSubs and "✅ مفعلة" or "❌ معطلة"
     
     local options = {
         "🎧 تعيين الوضع الافتراضي: صوت",
         "📺 تعيين الوضع الافتراضي: فيديو",
         "🔄 تعيين كمشغل دائم: " .. alwaysDefaultText,
-        "🗣️ قراءة الترجمة صوتياً: " .. voiceSubsText,
         "ℹ️ الوضع الحالي: " .. currentModeText
     }
     
@@ -3259,12 +2804,6 @@ function showPlayerSettings()
             local newVal = not alwaysDefault
             setData("xt_always_default", tostring(newVal))
             speak(newVal and "تم تفعيل المشغل الدائم" or "تم إلغاء المشغل الدائم")
-            showPlayerSettings()
-        elseif i == 4 then
-            local newVal = not voiceSubs
-            setData("xt_voice_subtitles", tostring(newVal))
-            SubtitleManager.isEnabled = newVal
-            speak(newVal and "تم تفعيل قراءة الترجمة" or "تم إلغاء قراءة الترجمة")
             showPlayerSettings()
         end
     end)
