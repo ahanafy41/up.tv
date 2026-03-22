@@ -199,10 +199,14 @@ function SubtitleManager.search(query, itemType)
 
     speak("جاري البحث عن ترجمة لـ " .. cleanQuery)
 
+    -- Normalizing the name further: if it contains Arabic, try to find an English equivalent if possible
+    -- Or just strip common IPTV junk that might remain
+    cleanQuery = cleanQuery:gsub("SUBTITLE", ""):gsub("ARABIC", ""):gsub("VOICE", "")
+
     SubtitleManager.activeQuery = query
     SubtitleManager.activeCleanQuery = cleanQuery
 
-    if itemType == "movie" or not (cleanQuery:find("[Ss]%d%d[Ee]%d%d")) then
+    if itemType == "movie" or not (cleanQuery:lower():find("s%d%de%d%d")) then
         SubtitleManager.searchYTS(cleanQuery)
     else
         SubtitleManager.searchSubtitleCat(cleanQuery, 1)
@@ -214,25 +218,44 @@ function SubtitleManager.searchSubtitleCat(searchTerm, attempt)
     pcall(function() encoded = URLEncoder.encode(searchTerm, "UTF-8") end)
     if encoded == "" then encoded = searchTerm:gsub(" ", "%%20") end
 
+    -- SubtitleCat search with Arabic filter
     local url = "https://www.subtitlecat.com/index.php?search=" .. encoded .. "&l=ar"
     local headers = HashMap()
-    headers.put("User-Agent", "Mozilla/5.0")
+    headers.put("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 
     Http.get(url, headers, function(code, body)
         if code == 200 then
-            local subPath = body:match('href="?/?(subs/[^"]+%.html)"?')
-            if subPath then
-                SubtitleManager.downloadSubtitleCat(subPath)
-            elseif attempt == 1 then
-                SubtitleManager.searchSubtitleCat(SubtitleManager.activeQuery, 2)
-            else
-                speak("لم يتم العثور على ترجمة")
-                SubtitleManager.isSearching = false
+            -- Find the best Arabic match by looking for keywords in the link text or title
+            -- Pattern matches: <a href="subs/XXX/name.html">Name</a>
+            local found = false
+            for path, title in body:gmatch('href="?/?(subs/[^"]+%.html)"?[^>]*>(.-)</a>') do
+                local lowerTitle = title:lower()
+                local lowerSearch = searchTerm:lower()
+
+                -- Check if title matches or contains Arabic indicators
+                if lowerTitle:find("arabic") or lowerTitle:find("ara") or lowerTitle:find(lowerSearch) then
+                    SubtitleManager.downloadSubtitleCat(path)
+                    found = true
+                    break
+                end
+            end
+
+            if not found then
+                -- Fallback to first link if any
+                local subPath = body:match('href="?/?(subs/[^"]+%.html)"?')
+                if subPath then
+                    SubtitleManager.downloadSubtitleCat(subPath)
+                elseif attempt == 1 then
+                    SubtitleManager.searchSubtitleCat(SubtitleManager.activeQuery, 2)
+                else
+                    speak("لم يتم العثور على ترجمة في المصدر الثاني")
+                    SubtitleManager.isSearching = false
+                end
             end
         elseif attempt == 1 then
             SubtitleManager.searchSubtitleCat(SubtitleManager.activeQuery, 2)
         else
-            speak("فشل البحث")
+            speak("فشل الاتصال بالمصدر الثاني")
             SubtitleManager.isSearching = false
         end
     end)
@@ -243,14 +266,16 @@ function SubtitleManager.searchYTS(searchTerm)
     pcall(function() encoded = URLEncoder.encode(searchTerm, "UTF-8") end)
     local url = "https://yts-subs.com/search/" .. encoded
     local headers = HashMap()
-    headers.put("User-Agent", "Mozilla/5.0")
+    headers.put("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 
     Http.get(url, headers, function(code, body)
         if code == 200 then
+            -- Match movie path from search results
             local moviePath = body:match('href="(/movie%-imdb/[^"]+)"')
             if moviePath then
                 Http.get("https://yts-subs.com" .. moviePath, headers, function(c, b)
                     if c == 200 then
+                        -- Highly specific Arabic YIFY match
                         local subPath = b:match('href="(/subtitles/[^"]+%-arabic%-yify%-[^"]+)"')
                             or b:match('href="(/subtitles/[^"]+)"[^>]*>Arabic<')
                             or b:match('>Arabic<.-href="(/subtitles/[^"]+)"')
@@ -258,6 +283,7 @@ function SubtitleManager.searchYTS(searchTerm)
                         if subPath then
                             SubtitleManager.downloadYTS(subPath)
                         else
+                            -- Fallback to SubtitleCat
                             SubtitleManager.searchSubtitleCat(SubtitleManager.activeCleanQuery, 1)
                         end
                     else
@@ -265,6 +291,7 @@ function SubtitleManager.searchYTS(searchTerm)
                     end
                 end)
             else
+                -- Try SubtitleCat immediately if no YTS movie match
                 SubtitleManager.searchSubtitleCat(SubtitleManager.activeCleanQuery, 1)
             end
         else
@@ -329,21 +356,32 @@ function SubtitleManager.downloadSubtitleCat(path)
     if not path:find("^/") then path = "/" .. path end
     local fullUrl = "https://www.subtitlecat.com" .. path
     local headers = HashMap()
-    headers.put("User-Agent", "Mozilla/5.0")
+    headers.put("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 
     Http.get(fullUrl, headers, function(code, body)
         if code == 200 then
-            -- Target the specific Arabic download link or any SRT link
-            local downloadLink = body:match('id="download_ar"[^>]+href="?/?(download/[^"]+%.srt)"?')
-                or body:match('href="?/?(download/[^"]+%-ar%.srt)"?')
+            -- Patterns found in real SubtitleCat HTML:
+            -- 1. id="download_ar" (best)
+            -- 2. /subs/NNN/name-ar.srt
+            -- 3. /download/NNN/name.srt
+            local downloadLink = body:match('id="download_ar"[^>]+href="?/?([^"]+%.srt)"?')
+                or body:match('href="?/?(subs/[^"]+%-ar%.srt)"?')
+                or body:match('href="?/?(subs/[^"]+%-arabic%.srt)"?')
                 or body:match('href="?/?(download/[^"]+%.srt)"?')
 
             if downloadLink then
                 if not downloadLink:find("^/") then downloadLink = "/" .. downloadLink end
                 SubtitleManager.downloadDirect("https://www.subtitlecat.com" .. downloadLink)
             else
-                speak("لا يمكن العثور على رابط التحميل في الصفحة")
-                SubtitleManager.isSearching = false
+                -- Try to find any green download link that looks like Arabic
+                downloadLink = body:match('class="green%-link"[^>]+href="?/?([^"]+%.srt)"?')
+                if downloadLink then
+                    if not downloadLink:find("^/") then downloadLink = "/" .. downloadLink end
+                    SubtitleManager.downloadDirect("https://www.subtitlecat.com" .. downloadLink)
+                else
+                    speak("لا يوجد رابط تحميل متاح لهذه النسخة")
+                    SubtitleManager.isSearching = false
+                end
             end
         else
             SubtitleManager.isSearching = false
