@@ -858,8 +858,7 @@ function VideoPlayer.showVideoUI()
                     textSize = "12sp",
                     textColor = "#00FF00",
                     padding = "10dp",
-                    focusable = true,
-                    contentDescription = "حالة التحميل المسبق"
+                    focusable = true
                 },
                 { Space, layout_weight = "1" },
                 {
@@ -1084,10 +1083,12 @@ function VideoPlayer.setupVideoView()
                 if what == 701 then
                     if VideoPlayer.widgets.bufferText then
                         VideoPlayer.widgets.bufferText.setText("⚡ جاري التحميل...")
+                        VideoPlayer.widgets.bufferText.setContentDescription("الكاش: جاري التحميل")
                     end
                 elseif what == 702 or what == 3 then
                     if VideoPlayer.widgets.bufferText then
                         VideoPlayer.widgets.bufferText.setText("⚡ يعمل (مستقر)")
+                        VideoPlayer.widgets.bufferText.setContentDescription("الكاش: يعمل ومستقر")
                     end
                 end
                 if what == 701 then -- MEDIA_INFO_BUFFERING_START
@@ -1123,6 +1124,7 @@ function VideoPlayer.setupVideoView()
                         if VideoPlayer.widgets.bufferText then
                             if VideoPlayer.isLive then
                                 VideoPlayer.widgets.bufferText.setText("⚡ الكاش: يعمل | " .. percent .. "%")
+                                VideoPlayer.widgets.bufferText.setContentDescription("الكاش يعمل بنسبة " .. percent .. " بالمائة")
                             else
                                 pcall(function()
                                     local totalDur = m_mp.getDuration()
@@ -1133,6 +1135,7 @@ function VideoPlayer.setupVideoView()
                                         local aheadMins = math.floor(aheadMs / 60000)
                                         local aheadSecs = math.floor((aheadMs % 60000) / 1000)
                                         VideoPlayer.widgets.bufferText.setText(string.format("⚡ محمل مسبقاً: %02d:%02d", aheadMins, aheadSecs))
+                                        VideoPlayer.widgets.bufferText.setContentDescription(string.format("تم تحميل الكاش مسبقاً بمقدار %d دقيقة و %d ثانية", aheadMins, aheadSecs))
                                     end
                                 end)
                             end
@@ -1684,9 +1687,15 @@ function AudioPlayer.init()
         AudioPlayer.player.setOnInfoListener(MediaPlayer.OnInfoListener{
             onInfo = function(mp, what, extra)
                 if what == 701 then
-                    if AudioPlayer.widgets.bufferText then AudioPlayer.widgets.bufferText.setText("⚡ جاري التحميل...") end
+                    if AudioPlayer.widgets.bufferText then
+                        AudioPlayer.widgets.bufferText.setText("⚡ جاري التحميل...")
+                        AudioPlayer.widgets.bufferText.setContentDescription("الكاش: جاري التحميل")
+                    end
                 elseif what == 702 or what == 3 then
-                    if AudioPlayer.widgets.bufferText then AudioPlayer.widgets.bufferText.setText("⚡ يعمل (مستقر)") end
+                    if AudioPlayer.widgets.bufferText then
+                        AudioPlayer.widgets.bufferText.setText("⚡ يعمل (مستقر)")
+                        AudioPlayer.widgets.bufferText.setContentDescription("الكاش: يعمل ومستقر")
+                    end
                 end
 
                 if what == 701 then -- MEDIA_INFO_BUFFERING_START
@@ -1716,6 +1725,7 @@ function AudioPlayer.init()
                 if AudioPlayer.widgets.bufferText then
                     if AudioPlayer.isLive then
                         AudioPlayer.widgets.bufferText.setText("⚡ الكاش: يعمل | " .. percent .. "%")
+                        AudioPlayer.widgets.bufferText.setContentDescription("الكاش يعمل بنسبة " .. percent .. " بالمائة")
                     else
                         pcall(function()
                             local totalDur = m_mp.getDuration()
@@ -1726,6 +1736,7 @@ function AudioPlayer.init()
                                 local aheadMins = math.floor(aheadMs / 60000)
                                 local aheadSecs = math.floor((aheadMs % 60000) / 1000)
                                 AudioPlayer.widgets.bufferText.setText(string.format("⚡ محمل مسبقاً: %02d:%02d", aheadMins, aheadSecs))
+                                AudioPlayer.widgets.bufferText.setContentDescription(string.format("تم تحميل الكاش مسبقاً بمقدار %d دقيقة و %d ثانية", aheadMins, aheadSecs))
                             end
                         end)
                     end
@@ -2232,8 +2243,7 @@ function AudioPlayer.showUI()
         {
             LinearLayout, orientation="horizontal", layout_width="fill", layout_marginBottom="12dp", gravity="center",
             { TextView, id="pBufferText", text="⚡ الكاش: 0%", textColor="#00FF00", textSize="12sp",
-              layout_weight="1", gravity="center", focusable=true,
-              contentDescription="حالة التحميل المسبق"
+              layout_weight="1", gravity="center", focusable=true
             },
             { TextView, id="pSpeedText", text="⚡ 0 KB/s", textColor=COL_ACCENT_START,
               layout_weight="1", gravity="center", focusable=true,
