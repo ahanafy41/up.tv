@@ -15,6 +15,7 @@ import "android.media.session.PlaybackState"
 import "android.media.MediaMetadata"
 import "android.net.TrafficStats"
 import "android.os.Process"
+import "android.os.AsyncTask"
 import "com.androlua.Http"
 import "android.content.Context"
 import "android.graphics.BitmapFactory"
@@ -1888,6 +1889,7 @@ function AudioPlayer.executeLoad()
         local uri = Uri.parse(AudioPlayer.currentUrl)
         local headers = HashMap()
         headers.put("User-Agent", "VLC/3.0.13 LibVLC/3.0.13")
+
         AudioPlayer.player.setDataSource(activity, uri, headers)
         AudioPlayer.player.prepareAsync()
     end)
