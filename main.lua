@@ -1101,7 +1101,7 @@ function VideoPlayer.setupVideoView()
                     VideoPlayer.bufferTimer.Period = 25000
                     VideoPlayer.bufferTimer.onTick = function()
                         VideoPlayer.bufferTimer.stop()
-                        if not VideoPlayer.isManualStop and videoView.isPlaying() == false then
+                        if VideoPlayer.isLive and not VideoPlayer.isManualStop and videoView.isPlaying() == false then
                              VideoPlayer.attemptRetry()
                         end
                     end
@@ -1247,30 +1247,18 @@ function VideoPlayer.togglePlay()
     local isPlaying = videoView.isPlaying()
     
     if isPlaying then
-        if VideoPlayer.isLive then
-            VideoPlayer.isManualStop = true -- Fix: Pause Logic
-            videoView.stopPlayback()
-            VideoPlayer.isPlaying = false
-            VideoPlayer.updateUIState(false)
-        else
-            videoView.pause()
-            VideoPlayer.isPlaying = false
+        VideoPlayer.isManualStop = true
+        videoView.pause()
+        VideoPlayer.isPlaying = false
+        if not VideoPlayer.isLive then
             VideoPlayer.savePosition(videoView.getCurrentPosition())
-            VideoPlayer.updateUIState(false)
         end
+        VideoPlayer.updateUIState(false)
     else
-        VideoPlayer.isManualStop = false -- Fix: Resume Logic
-        if VideoPlayer.isLive then
-            VideoPlayer.isSilentRetry = true
-            if VideoPlayer.widgets.loading then
-                VideoPlayer.widgets.loading.setVisibility(View.VISIBLE)
-            end
-            VideoPlayer.setupVideoView()
-        else
-            videoView.start()
-            VideoPlayer.isPlaying = true
-            VideoPlayer.updateUIState(true)
-        end
+        VideoPlayer.isManualStop = false
+        videoView.start()
+        VideoPlayer.isPlaying = true
+        VideoPlayer.updateUIState(true)
     end
 end
 
@@ -1446,10 +1434,10 @@ function VideoPlayer.startTimer()
                 VideoPlayer.lastRxBytes = rx
 
                 if current == VideoPlayer.lastPosition then
-                    -- Enhanced Anti-Buffering: Give player time to build progressive buffer
-                    if VideoPlayer.lastPositionTime > 0 and (now - VideoPlayer.lastPositionTime) > 25000 then
-                        VideoPlayer.lastPositionTime = now
-                        if not VideoPlayer.isManualStop then
+                    -- Only apply watchdog to Live streams and ONLY if not paused manually
+                    if VideoPlayer.isLive and not VideoPlayer.isManualStop then
+                        if VideoPlayer.lastPositionTime > 0 and (now - VideoPlayer.lastPositionTime) > 25000 then
+                            VideoPlayer.lastPositionTime = now
                             VideoPlayer.attemptRetry()
                         end
                     end
@@ -1715,7 +1703,7 @@ function AudioPlayer.init()
                     AudioPlayer.bufferTimer.Period = 25000
                     AudioPlayer.bufferTimer.onTick = function()
                         AudioPlayer.bufferTimer.stop()
-                        if not AudioPlayer.isManualStop and mp.isPlaying() == false then
+                        if AudioPlayer.isLive and not AudioPlayer.isManualStop and mp.isPlaying() == false then
                              AudioPlayer.attemptRetry()
                         end
                     end
@@ -1896,29 +1884,20 @@ function AudioPlayer.togglePlay()
     lastActionTime = now
 
     if AudioPlayer.player.isPlaying() then
-        if AudioPlayer.isLive then
-             AudioPlayer.isManualStop = true -- Fix: Pause Logic
-             AudioPlayer.player.reset() 
-             AudioPlayer.updateUIState(false)
-             speak("إيقاف (مباشر)")
-        else
-             AudioPlayer.player.pause()
+        AudioPlayer.isManualStop = true
+        AudioPlayer.player.pause()
+        if not AudioPlayer.isLive then
              AudioPlayer.savePosition(AudioPlayer.player.getCurrentPosition())
-             AudioPlayer.updateUIState(false)
-             speak("إيقاف مؤقت")
         end
+        AudioPlayer.updateUIState(false)
+        speak("إيقاف مؤقت")
         if AudioPlayer.bufferTimer then AudioPlayer.bufferTimer.stop() end
     else
         AudioPlayer.requestAudioFocus()
-        AudioPlayer.isManualStop = false -- Fix: Resume Logic
-        if AudioPlayer.isLive then
-             AudioPlayer.isSilentRetry = true
-             AudioPlayer.executeLoad()
-        else
-            AudioPlayer.player.start()
-            AudioPlayer.updateUIState(true)
-            speak("تشغيل")
-        end
+        AudioPlayer.isManualStop = false
+        AudioPlayer.player.start()
+        AudioPlayer.updateUIState(true)
+        speak("تشغيل")
     end
 end
 
@@ -2070,11 +2049,11 @@ function AudioPlayer.startTimer()
             AudioPlayer.lastRxBytes = rx
 
             if current == AudioPlayer.lastPosition then
-                -- Enhanced Anti-Buffering: Give player time to build progressive buffer
-                if AudioPlayer.lastPositionTime > 0 and (now - AudioPlayer.lastPositionTime) > 25000 then
-                    AudioPlayer.lastPositionTime = now
-                    if not AudioPlayer.isManualStop then
-                         AudioPlayer.attemptRetry()
+                -- Only apply watchdog to Live streams and ONLY if not paused manually
+                if AudioPlayer.isLive and not AudioPlayer.isManualStop then
+                    if AudioPlayer.lastPositionTime > 0 and (now - AudioPlayer.lastPositionTime) > 25000 then
+                        AudioPlayer.lastPositionTime = now
+                        AudioPlayer.attemptRetry()
                     end
                 end
             else
