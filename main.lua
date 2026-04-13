@@ -2049,28 +2049,29 @@ function AudioPlayer.startTimer()
         end
 
         if AudioPlayer.player and AudioPlayer.widgets.seek then
-            local current = AudioPlayer.player.getCurrentPosition()
-            local now = System.currentTimeMillis()
+            pcall(function()
+                local current = AudioPlayer.player.getCurrentPosition()
+                local now = System.currentTimeMillis()
 
-            -- Internet Speed and Cache Calculation (always run even if paused)
-            local rx = TrafficStats.getUidRxBytes(Process.myUid())
-            if AudioPlayer.lastRxBytes > 0 then
-                local diff = rx - AudioPlayer.lastRxBytes
+                -- Internet Speed and Cache Calculation (always run even if paused)
+                local rx = TrafficStats.getUidRxBytes(Process.myUid())
+                if AudioPlayer.lastRxBytes > 0 then
+                    local diff = rx - AudioPlayer.lastRxBytes
                     if diff > 0 then
                         AudioPlayer.accumulatedCacheBytes = AudioPlayer.accumulatedCacheBytes + diff
                     end
-                table.insert(AudioPlayer.speedHistory, diff)
-                if #AudioPlayer.speedHistory > 3 then table.remove(AudioPlayer.speedHistory, 1) end
+                    table.insert(AudioPlayer.speedHistory, diff)
+                    if #AudioPlayer.speedHistory > 3 then table.remove(AudioPlayer.speedHistory, 1) end
 
-                local avg = 0
-                for _, v in ipairs(AudioPlayer.speedHistory) do avg = avg + v end
-                avg = avg / #AudioPlayer.speedHistory
+                    local avg = 0
+                    for _, v in ipairs(AudioPlayer.speedHistory) do avg = avg + v end
+                    avg = avg / #AudioPlayer.speedHistory
 
-                local speedStr, speedA11y = formatSpeed(math.floor(avg))
-                if AudioPlayer.widgets.speedText then
-                    AudioPlayer.widgets.speedText.setText("⚡ " .. speedStr)
-                    AudioPlayer.widgets.speedText.setContentDescription("سرعة الإنترنت الحالية: " .. speedA11y)
-                end
+                    local speedStr, speedA11y = formatSpeed(math.floor(avg))
+                    if AudioPlayer.widgets.speedText then
+                        AudioPlayer.widgets.speedText.setText("⚡ " .. speedStr)
+                        AudioPlayer.widgets.speedText.setContentDescription("سرعة الإنترنت الحالية: " .. speedA11y)
+                    end
 
                     if AudioPlayer.isLive and AudioPlayer.widgets.bufferText then
                         local mb = AudioPlayer.accumulatedCacheBytes / (1024 * 1024)
@@ -2078,58 +2079,59 @@ function AudioPlayer.startTimer()
                         AudioPlayer.widgets.bufferText.setText("⚡ الكاش: " .. formattedMb .. " MB")
                         AudioPlayer.widgets.bufferText.setContentDescription("تم تحميل " .. formattedMb .. " ميجابايت من البث المباشر")
                     end
-            end
-            AudioPlayer.lastRxBytes = rx
-
-            -- Watchdog: Only track if playing
-            if AudioPlayer.player.isPlaying() then
-                if current == AudioPlayer.lastPosition then
-                    -- Only apply watchdog to Live streams and ONLY if not paused manually
-                    if AudioPlayer.isLive and not AudioPlayer.isManualStop then
-                        if AudioPlayer.lastPositionTime > 0 and (now - AudioPlayer.lastPositionTime) > 25000 then
-                            AudioPlayer.lastPositionTime = now
-                            AudioPlayer.attemptRetry()
-                        end
-                    end
-                else
-                    AudioPlayer.lastPosition = current
-                    AudioPlayer.lastPositionTime = now
                 end
-            end
+                AudioPlayer.lastRxBytes = rx
 
-            local total = AudioPlayer.player.getDuration()
-            if AudioPlayer.isLive or total <= 0 then total = 100 end 
-            
-            AudioPlayer.widgets.seek.setMax(total)
-            AudioPlayer.widgets.seek.setProgress(current)
-            
-            local cMins = math.floor(current/60000)
-            local cSecs = math.floor((current%60000)/1000)
-            local tMins = math.floor(total/60000)
-            local tSecs = math.floor((total%60000)/1000)
-
-            local t_str = AudioPlayer.isLive and "بث مباشر" or string.format("%02d:%02d", tMins, tSecs)
-            AudioPlayer.widgets.time.setText(string.format("%02d:%02d / %s", cMins, cSecs, t_str))
-
-            local readableDesc = string.format("تم تشغيل %d دقيقة و %d ثانية من أصل %d دقيقة", cMins, cSecs, tMins)
-            if AudioPlayer.isLive then
-                readableDesc = "بث مباشر"
-            end
-            AudioPlayer.widgets.seek.setContentDescription(readableDesc)
-            
-            if AudioPlayer.player.isPlaying() then
-                tickCount = tickCount + 1
-                if tickCount >= 10 then
-                    tickCount = 0
-                    local item = AudioPlayer.getCurrentItem()
-                    if item and item.id and not AudioPlayer.isLive then
-                        HistoryManager.updatePosition(item.id, current, total)
-                        if current > 5000 then
-                            setData("resume_"..item.id, tostring(current))
+                -- Watchdog: Only track if playing
+                if AudioPlayer.player.isPlaying() then
+                    if current == AudioPlayer.lastPosition then
+                        -- Only apply watchdog to Live streams and ONLY if not paused manually
+                        if AudioPlayer.isLive and not AudioPlayer.isManualStop then
+                            if AudioPlayer.lastPositionTime > 0 and (now - AudioPlayer.lastPositionTime) > 25000 then
+                                AudioPlayer.lastPositionTime = now
+                                AudioPlayer.attemptRetry()
+                            end
                         end
+                    else
+                        AudioPlayer.lastPosition = current
+                        AudioPlayer.lastPositionTime = now
                     end
                 end
-            end
+
+                local total = AudioPlayer.player.getDuration()
+                if AudioPlayer.isLive or total <= 0 then total = 100 end
+
+                AudioPlayer.widgets.seek.setMax(total)
+                AudioPlayer.widgets.seek.setProgress(current)
+
+                local cMins = math.floor(current/60000)
+                local cSecs = math.floor((current%60000)/1000)
+                local tMins = math.floor(total/60000)
+                local tSecs = math.floor((total%60000)/1000)
+
+                local t_str = AudioPlayer.isLive and "بث مباشر" or string.format("%02d:%02d", tMins, tSecs)
+                AudioPlayer.widgets.time.setText(string.format("%02d:%02d / %s", cMins, cSecs, t_str))
+
+                local readableDesc = string.format("تم تشغيل %d دقيقة و %d ثانية من أصل %d دقيقة", cMins, cSecs, tMins)
+                if AudioPlayer.isLive then
+                    readableDesc = "بث مباشر"
+                end
+                AudioPlayer.widgets.seek.setContentDescription(readableDesc)
+
+                if AudioPlayer.player.isPlaying() then
+                    tickCount = tickCount + 1
+                    if tickCount >= 10 then
+                        tickCount = 0
+                        local item = AudioPlayer.getCurrentItem()
+                        if item and item.id and not AudioPlayer.isLive then
+                            HistoryManager.updatePosition(item.id, current, total)
+                            if current > 5000 then
+                                setData("resume_"..item.id, tostring(current))
+                            end
+                        end
+                    end
+                end
+            end)
         end
     end
     AudioPlayer.timer.start()
