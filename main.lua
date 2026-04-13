@@ -1173,7 +1173,16 @@ function VideoPlayer.setupVideoView()
         videoView.setOnErrorListener(MediaPlayer.OnErrorListener{
             onError = function(mp, what, extra)
                 if not VideoPlayer.isManualStop then
-                    VideoPlayer.attemptRetry() -- Clean: No speak
+                    if VideoPlayer.isLive then
+                        VideoPlayer.attemptRetry()
+                    else
+                        if VideoPlayer.widgets.bufferText then
+                            VideoPlayer.widgets.bufferText.setText("⚠️ خطأ في التشغيل")
+                        end
+                        if VideoPlayer.widgets.loading then VideoPlayer.widgets.loading.setVisibility(View.GONE) end
+                        VideoPlayer.isPlaying = false
+                        VideoPlayer.updateUIState(false)
+                    end
                 end
                 return true
             end
@@ -1666,9 +1675,11 @@ function AudioPlayer.init()
                     local duration = mp.getDuration()
                     local current = mp.getCurrentPosition()
                     if duration > 0 and (duration - current) > 10000 then
-                        speak("انقطع الاتصال، استكمال...")
-                        AudioPlayer.savePosition(current) 
-                        AudioPlayer.playRetry() 
+                        -- Prevent endless retry loops on VOD. Just halt on error/completion stall
+                        if AudioPlayer.widgets.bufferText then
+                            AudioPlayer.widgets.bufferText.setText("⚠️ انقطع الاتصال")
+                        end
+                        AudioPlayer.updateUIState(false)
                     else
                         AudioPlayer.savePosition(0)
                         local item = AudioPlayer.getCurrentItem()
@@ -1743,7 +1754,14 @@ function AudioPlayer.init()
         AudioPlayer.player.setOnErrorListener(MediaPlayer.OnErrorListener{
             onError=function(mp, what, extra)
                 if not AudioPlayer.isManualStop then
-                     AudioPlayer.attemptRetry() -- Clean: No speak
+                    if AudioPlayer.isLive then
+                        AudioPlayer.attemptRetry()
+                    else
+                        if AudioPlayer.widgets.bufferText then
+                            AudioPlayer.widgets.bufferText.setText("⚠️ خطأ في التشغيل")
+                        end
+                        AudioPlayer.updateUIState(false)
+                    end
                 end
                 return true
             end
