@@ -536,7 +536,8 @@ VideoPlayer = {
     lastPosition = -1,
     lastPositionTime = 0,
     lastRxBytes = 0,
-    speedHistory = {}
+    speedHistory = {},
+    accumulatedCacheBytes = 0
 }
 
 function VideoPlayer.repair()
@@ -1062,6 +1063,7 @@ function VideoPlayer.setupVideoView()
     VideoPlayer.isManualStop = false -- Fix: State Reset
     VideoPlayer.lastPosition = -1
     VideoPlayer.lastPositionTime = 0
+    VideoPlayer.accumulatedCacheBytes = 0
     
     if VideoPlayer.widgets.loading then
         VideoPlayer.widgets.loading.setVisibility(View.VISIBLE)
@@ -1122,10 +1124,7 @@ function VideoPlayer.setupVideoView()
                         end
 
                         if VideoPlayer.widgets.bufferText then
-                            if VideoPlayer.isLive then
-                                VideoPlayer.widgets.bufferText.setText("⚡ الكاش: يعمل | " .. percent .. "%")
-                                VideoPlayer.widgets.bufferText.setContentDescription("الكاش يعمل بنسبة " .. percent .. " بالمائة")
-                            else
+                            if not VideoPlayer.isLive then
                                 pcall(function()
                                     local totalDur = m_mp.getDuration()
                                     if totalDur > 0 then
@@ -1293,6 +1292,7 @@ function VideoPlayer.stop()
     if VideoPlayer.bufferTimer then VideoPlayer.bufferTimer.stop() end
     VideoPlayer.lastRxBytes = 0
     VideoPlayer.speedHistory = {}
+    VideoPlayer.accumulatedCacheBytes = 0
     if VideoPlayer.uiHideTimer then VideoPlayer.uiHideTimer.stop(); VideoPlayer.uiHideTimer = nil end
     VideoPlayer.abandonAudioFocus()
     VideoPlayer.cancelNotification()
@@ -1420,6 +1420,9 @@ function VideoPlayer.startTimer()
                 local rx = TrafficStats.getUidRxBytes(Process.myUid())
                 if VideoPlayer.lastRxBytes > 0 then
                     local diff = rx - VideoPlayer.lastRxBytes
+                    if diff > 0 then
+                        VideoPlayer.accumulatedCacheBytes = VideoPlayer.accumulatedCacheBytes + diff
+                    end
                     table.insert(VideoPlayer.speedHistory, diff)
                     if #VideoPlayer.speedHistory > 3 then table.remove(VideoPlayer.speedHistory, 1) end
 
@@ -1431,6 +1434,13 @@ function VideoPlayer.startTimer()
                     if VideoPlayer.widgets.speedText then
                         VideoPlayer.widgets.speedText.setText("⚡ " .. speedStr)
                         VideoPlayer.widgets.speedText.setContentDescription("سرعة الإنترنت الحالية: " .. speedA11y)
+                    end
+
+                    if VideoPlayer.isLive and VideoPlayer.widgets.bufferText then
+                        local mb = VideoPlayer.accumulatedCacheBytes / (1024 * 1024)
+                        local formattedMb = string.format("%.1f", mb)
+                        VideoPlayer.widgets.bufferText.setText("⚡ الكاش: " .. formattedMb .. " MB")
+                        VideoPlayer.widgets.bufferText.setContentDescription("تم تحميل " .. formattedMb .. " ميجابايت من البث المباشر")
                     end
                 end
                 VideoPlayer.lastRxBytes = rx
@@ -1582,6 +1592,7 @@ AudioPlayer = {
     lastPositionTime = 0,
     lastRxBytes = 0,
     speedHistory = {},
+    accumulatedCacheBytes = 0,
     
     sleepTargetTime = nil 
 }
@@ -1723,10 +1734,7 @@ function AudioPlayer.init()
                 end
 
                 if AudioPlayer.widgets.bufferText then
-                    if AudioPlayer.isLive then
-                        AudioPlayer.widgets.bufferText.setText("⚡ الكاش: يعمل | " .. percent .. "%")
-                        AudioPlayer.widgets.bufferText.setContentDescription("الكاش يعمل بنسبة " .. percent .. " بالمائة")
-                    else
+                    if not AudioPlayer.isLive then
                         pcall(function()
                             local totalDur = m_mp.getDuration()
                             if totalDur > 0 then
@@ -1854,6 +1862,7 @@ function AudioPlayer.executeLoad()
     AudioPlayer.isManualStop = false -- Fix: State Reset
     AudioPlayer.lastPosition = -1
     AudioPlayer.lastPositionTime = 0
+    AudioPlayer.accumulatedCacheBytes = 0
     pcall(function()
         local uri = Uri.parse(AudioPlayer.currentUrl)
         local headers = HashMap()
@@ -1930,6 +1939,7 @@ function AudioPlayer.stop()
         if AudioPlayer.bufferTimer then AudioPlayer.bufferTimer.stop() end
         AudioPlayer.lastRxBytes = 0
         AudioPlayer.speedHistory = {}
+        AudioPlayer.accumulatedCacheBytes = 0
     end
     AudioPlayer.abandonAudioFocus()
     AudioPlayer.cancelNotification()
@@ -2034,6 +2044,9 @@ function AudioPlayer.startTimer()
             local rx = TrafficStats.getUidRxBytes(Process.myUid())
             if AudioPlayer.lastRxBytes > 0 then
                 local diff = rx - AudioPlayer.lastRxBytes
+                    if diff > 0 then
+                        AudioPlayer.accumulatedCacheBytes = AudioPlayer.accumulatedCacheBytes + diff
+                    end
                 table.insert(AudioPlayer.speedHistory, diff)
                 if #AudioPlayer.speedHistory > 3 then table.remove(AudioPlayer.speedHistory, 1) end
 
@@ -2046,6 +2059,13 @@ function AudioPlayer.startTimer()
                     AudioPlayer.widgets.speedText.setText("⚡ " .. speedStr)
                     AudioPlayer.widgets.speedText.setContentDescription("سرعة الإنترنت الحالية: " .. speedA11y)
                 end
+
+                    if AudioPlayer.isLive and AudioPlayer.widgets.bufferText then
+                        local mb = AudioPlayer.accumulatedCacheBytes / (1024 * 1024)
+                        local formattedMb = string.format("%.1f", mb)
+                        AudioPlayer.widgets.bufferText.setText("⚡ الكاش: " .. formattedMb .. " MB")
+                        AudioPlayer.widgets.bufferText.setContentDescription("تم تحميل " .. formattedMb .. " ميجابايت من البث المباشر")
+                    end
             end
             AudioPlayer.lastRxBytes = rx
 
