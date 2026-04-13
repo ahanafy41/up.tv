@@ -1195,18 +1195,30 @@ function VideoPlayer.setupVideoView()
                          VideoPlayer.attemptRetry()
                     end
                 else
-                    local item = VideoPlayer.getCurrentItem()
-                    VideoPlayer.savePosition(0)
-                    
-                    if item.type == "movie" then
-                        HistoryManager.remove(item.id)
-                        VideoPlayer.stop()
-                    elseif VideoPlayer.currentIndex < #VideoPlayer.playlist then
-                        speak("بدء الحلقة التالية")
-                        VideoPlayer.next()
+                    local duration = mp.getDuration()
+                    local current = mp.getCurrentPosition()
+                    if duration > 0 and (duration - current) > 10000 then
+                        -- Prevent endless retry loops on VOD. Just halt on error/completion stall
+                        if VideoPlayer.widgets.bufferText then
+                            VideoPlayer.widgets.bufferText.setText("⚠️ انقطع الاتصال")
+                        end
+                        if VideoPlayer.widgets.loading then VideoPlayer.widgets.loading.setVisibility(View.GONE) end
+                        VideoPlayer.isPlaying = false
+                        VideoPlayer.updateUIState(false)
                     else
-                        speak("انتهى الموسم")
-                        VideoPlayer.stop()
+                        local item = VideoPlayer.getCurrentItem()
+                        VideoPlayer.savePosition(0)
+
+                        if item.type == "movie" then
+                            HistoryManager.remove(item.id)
+                            VideoPlayer.stop()
+                        elseif VideoPlayer.currentIndex < #VideoPlayer.playlist then
+                            speak("بدء الحلقة التالية")
+                            VideoPlayer.next()
+                        else
+                            speak("انتهى الموسم")
+                            VideoPlayer.stop()
+                        end
                     end
                 end
             end
