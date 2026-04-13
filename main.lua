@@ -1406,14 +1406,12 @@ function VideoPlayer.startTimer()
     local tickCount = 0
     VideoPlayer.timer.onTick = function()
         local videoView = VideoPlayer.widgets.videoView
-        if videoView and VideoPlayer.isPlaying and VideoPlayer.widgets.seek then
+        if videoView and VideoPlayer.widgets.seek then
             pcall(function()
                 local current = videoView.getCurrentPosition()
-
-                -- Watchdog for live streams (and stalled VOD)
                 local now = System.currentTimeMillis()
 
-                -- Internet Speed Calculation (3-second moving average)
+                -- Internet Speed and Cache Calculation (always run even if paused)
                 local rx = TrafficStats.getUidRxBytes(Process.myUid())
                 if VideoPlayer.lastRxBytes > 0 then
                     local diff = rx - VideoPlayer.lastRxBytes
@@ -1442,17 +1440,20 @@ function VideoPlayer.startTimer()
                 end
                 VideoPlayer.lastRxBytes = rx
 
-                if current == VideoPlayer.lastPosition then
-                    -- Only apply watchdog to Live streams and ONLY if not paused manually
-                    if VideoPlayer.isLive and not VideoPlayer.isManualStop then
-                        if VideoPlayer.lastPositionTime > 0 and (now - VideoPlayer.lastPositionTime) > 25000 then
-                            VideoPlayer.lastPositionTime = now
-                            VideoPlayer.attemptRetry()
+                -- Watchdog: Only track if playing
+                if VideoPlayer.isPlaying then
+                    if current == VideoPlayer.lastPosition then
+                        -- Only apply watchdog to Live streams and ONLY if not paused manually
+                        if VideoPlayer.isLive and not VideoPlayer.isManualStop then
+                            if VideoPlayer.lastPositionTime > 0 and (now - VideoPlayer.lastPositionTime) > 25000 then
+                                VideoPlayer.lastPositionTime = now
+                                VideoPlayer.attemptRetry()
+                            end
                         end
+                    else
+                        VideoPlayer.lastPosition = current
+                        VideoPlayer.lastPositionTime = now
                     end
-                else
-                    VideoPlayer.lastPosition = current
-                    VideoPlayer.lastPositionTime = now
                 end
 
                 local total = videoView.getDuration()
@@ -1475,14 +1476,16 @@ function VideoPlayer.startTimer()
                 end
                 VideoPlayer.widgets.seek.setContentDescription(readableDesc)
                 
-                tickCount = tickCount + 1
-                if tickCount >= 10 then
-                    tickCount = 0
-                    local item = VideoPlayer.getCurrentItem()
-                    if item and item.id and not VideoPlayer.isLive then
-                        HistoryManager.updatePosition(item.id, current, total)
-                        if current > 5000 then
-                            setData("resume_"..item.id, tostring(current))
+                if VideoPlayer.isPlaying then
+                    tickCount = tickCount + 1
+                    if tickCount >= 10 then
+                        tickCount = 0
+                        local item = VideoPlayer.getCurrentItem()
+                        if item and item.id and not VideoPlayer.isLive then
+                            HistoryManager.updatePosition(item.id, current, total)
+                            if current > 5000 then
+                                setData("resume_"..item.id, tostring(current))
+                            end
                         end
                     end
                 end
@@ -2031,13 +2034,11 @@ function AudioPlayer.startTimer()
             return
         end
 
-        if AudioPlayer.player and AudioPlayer.player.isPlaying() and AudioPlayer.widgets.seek then
+        if AudioPlayer.player and AudioPlayer.widgets.seek then
             local current = AudioPlayer.player.getCurrentPosition()
-
-            -- Watchdog for live streams (and stalled VOD)
             local now = System.currentTimeMillis()
 
-            -- Internet Speed Calculation (3-second moving average)
+            -- Internet Speed and Cache Calculation (always run even if paused)
             local rx = TrafficStats.getUidRxBytes(Process.myUid())
             if AudioPlayer.lastRxBytes > 0 then
                 local diff = rx - AudioPlayer.lastRxBytes
@@ -2066,17 +2067,20 @@ function AudioPlayer.startTimer()
             end
             AudioPlayer.lastRxBytes = rx
 
-            if current == AudioPlayer.lastPosition then
-                -- Only apply watchdog to Live streams and ONLY if not paused manually
-                if AudioPlayer.isLive and not AudioPlayer.isManualStop then
-                    if AudioPlayer.lastPositionTime > 0 and (now - AudioPlayer.lastPositionTime) > 25000 then
-                        AudioPlayer.lastPositionTime = now
-                        AudioPlayer.attemptRetry()
+            -- Watchdog: Only track if playing
+            if AudioPlayer.player.isPlaying() then
+                if current == AudioPlayer.lastPosition then
+                    -- Only apply watchdog to Live streams and ONLY if not paused manually
+                    if AudioPlayer.isLive and not AudioPlayer.isManualStop then
+                        if AudioPlayer.lastPositionTime > 0 and (now - AudioPlayer.lastPositionTime) > 25000 then
+                            AudioPlayer.lastPositionTime = now
+                            AudioPlayer.attemptRetry()
+                        end
                     end
+                else
+                    AudioPlayer.lastPosition = current
+                    AudioPlayer.lastPositionTime = now
                 end
-            else
-                AudioPlayer.lastPosition = current
-                AudioPlayer.lastPositionTime = now
             end
 
             local total = AudioPlayer.player.getDuration()
@@ -2099,14 +2103,16 @@ function AudioPlayer.startTimer()
             end
             AudioPlayer.widgets.seek.setContentDescription(readableDesc)
             
-            tickCount = tickCount + 1
-            if tickCount >= 10 then
-                tickCount = 0
-                local item = AudioPlayer.getCurrentItem()
-                if item and item.id and not AudioPlayer.isLive then
-                    HistoryManager.updatePosition(item.id, current, total)
-                    if current > 5000 then
-                        setData("resume_"..item.id, tostring(current))
+            if AudioPlayer.player.isPlaying() then
+                tickCount = tickCount + 1
+                if tickCount >= 10 then
+                    tickCount = 0
+                    local item = AudioPlayer.getCurrentItem()
+                    if item and item.id and not AudioPlayer.isLive then
+                        HistoryManager.updatePosition(item.id, current, total)
+                        if current > 5000 then
+                            setData("resume_"..item.id, tostring(current))
+                        end
                     end
                 end
             end
