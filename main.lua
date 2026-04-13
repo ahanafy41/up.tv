@@ -851,6 +851,17 @@ function VideoPlayer.showVideoUI()
                 importantForAccessibility = 2,
                 {
                     TextView,
+                    id = "vBufferText",
+                    text = "⚡ الكاش: 0%",
+                    textSize = "12sp",
+                    textColor = "#00FF00",
+                    padding = "10dp",
+                    focusable = true,
+                    contentDescription = "حالة التحميل المسبق"
+                },
+                { Space, layout_weight = "1" },
+                {
+                    TextView,
                     id = "vSpeedText",
                     text = "0 KB/s",
                     textSize = "14sp",
@@ -859,6 +870,7 @@ function VideoPlayer.showVideoUI()
                     focusable = true,
                     contentDescription = "سرعة الإنترنت: صفر كيلوبايت في الثانية"
                 },
+                { Space, layout_weight = "1" },
                 {
                     Button,
                     id = "vRepairBtn",
@@ -1001,6 +1013,7 @@ function VideoPlayer.showVideoUI()
     VideoPlayer.widgets.fsBtn = vFsBtn
     VideoPlayer.widgets.controlLayer = vControlLayer
     VideoPlayer.widgets.speedText = vSpeedText
+    VideoPlayer.widgets.bufferText = vBufferText
     
     pcall(function()
         if Build.VERSION.SDK_INT >= 22 then
@@ -1066,12 +1079,21 @@ function VideoPlayer.setupVideoView()
 
         videoView.setOnInfoListener(MediaPlayer.OnInfoListener{
             onInfo = function(mp, what, extra)
+                if what == 701 then
+                    if VideoPlayer.widgets.bufferText then
+                        VideoPlayer.widgets.bufferText.setText("⚡ جاري التحميل...")
+                    end
+                elseif what == 702 or what == 3 then
+                    if VideoPlayer.widgets.bufferText then
+                        VideoPlayer.widgets.bufferText.setText("⚡ يعمل (مستقر)")
+                    end
+                end
                 if what == 701 then -- MEDIA_INFO_BUFFERING_START
                     if VideoPlayer.widgets.loading then VideoPlayer.widgets.loading.setVisibility(View.VISIBLE) end
-                    -- Strong Anti-Buffering: if buffering takes > 8s, force refresh
+                    -- Enhanced Anti-Buffering: Give player more time to build cache (25s) before killing it
                     if VideoPlayer.bufferTimer then VideoPlayer.bufferTimer.stop() end
                     VideoPlayer.bufferTimer = Ticker()
-                    VideoPlayer.bufferTimer.Period = 8000
+                    VideoPlayer.bufferTimer.Period = 25000
                     VideoPlayer.bufferTimer.onTick = function()
                         VideoPlayer.bufferTimer.stop()
                         if not VideoPlayer.isManualStop and videoView.isPlaying() == false then
@@ -1087,6 +1109,31 @@ function VideoPlayer.setupVideoView()
             end
         })
         
+        -- Handle explicit buffering percentage
+        videoView.setOnBufferingUpdateListener(MediaPlayer.OnBufferingUpdateListener{
+            onBufferingUpdate = function(mp, percent)
+                if VideoPlayer.widgets.seek then
+                    VideoPlayer.widgets.seek.setSecondaryProgress(math.floor((percent / 100) * VideoPlayer.widgets.seek.getMax()))
+                end
+
+                if VideoPlayer.widgets.bufferText then
+                    if VideoPlayer.isLive then
+                        VideoPlayer.widgets.bufferText.setText("⚡ الكاش: يعمل | " .. percent .. "%")
+                    else
+                        local totalDur = mp.getDuration()
+                        if totalDur > 0 then
+                            local cachedMs = math.floor((percent / 100) * totalDur)
+                            local currentMs = mp.getCurrentPosition()
+                            local aheadMs = math.max(0, cachedMs - currentMs)
+                            local aheadMins = math.floor(aheadMs / 60000)
+                            local aheadSecs = math.floor((aheadMs % 60000) / 1000)
+                            VideoPlayer.widgets.bufferText.setText(string.format("⚡ محمل مسبقاً: %02d:%02d", aheadMins, aheadSecs))
+                        end
+                    end
+                end
+            end
+        })
+
         videoView.setOnPreparedListener(MediaPlayer.OnPreparedListener{
             onPrepared = function(mp)
                 VideoPlayer.isPrepared = true
@@ -1382,8 +1429,8 @@ function VideoPlayer.startTimer()
                 VideoPlayer.lastRxBytes = rx
 
                 if current == VideoPlayer.lastPosition then
-                    -- Strong Anti-Buffering: Reduced from 15s to 5s for aggressive recovery
-                    if VideoPlayer.lastPositionTime > 0 and (now - VideoPlayer.lastPositionTime) > 5000 then
+                    -- Enhanced Anti-Buffering: Give player time to build progressive buffer
+                    if VideoPlayer.lastPositionTime > 0 and (now - VideoPlayer.lastPositionTime) > 25000 then
                         VideoPlayer.lastPositionTime = now
                         if not VideoPlayer.isManualStop then
                             VideoPlayer.attemptRetry()
@@ -1632,10 +1679,16 @@ function AudioPlayer.init()
         
         AudioPlayer.player.setOnInfoListener(MediaPlayer.OnInfoListener{
             onInfo = function(mp, what, extra)
+                if what == 701 then
+                    if AudioPlayer.widgets.bufferText then AudioPlayer.widgets.bufferText.setText("⚡ جاري التحميل...") end
+                elseif what == 702 or what == 3 then
+                    if AudioPlayer.widgets.bufferText then AudioPlayer.widgets.bufferText.setText("⚡ يعمل (مستقر)") end
+                end
+
                 if what == 701 then -- MEDIA_INFO_BUFFERING_START
                     if AudioPlayer.bufferTimer then AudioPlayer.bufferTimer.stop() end
                     AudioPlayer.bufferTimer = Ticker()
-                    AudioPlayer.bufferTimer.Period = 8000
+                    AudioPlayer.bufferTimer.Period = 25000
                     AudioPlayer.bufferTimer.onTick = function()
                         AudioPlayer.bufferTimer.stop()
                         if not AudioPlayer.isManualStop and mp.isPlaying() == false then
@@ -1647,6 +1700,30 @@ function AudioPlayer.init()
                     if AudioPlayer.bufferTimer then AudioPlayer.bufferTimer.stop(); AudioPlayer.bufferTimer = nil end
                 end
                 return true
+            end
+        })
+
+        AudioPlayer.player.setOnBufferingUpdateListener(MediaPlayer.OnBufferingUpdateListener{
+            onBufferingUpdate = function(mp, percent)
+                if AudioPlayer.widgets.seek then
+                    AudioPlayer.widgets.seek.setSecondaryProgress(math.floor((percent / 100) * AudioPlayer.widgets.seek.getMax()))
+                end
+
+                if AudioPlayer.widgets.bufferText then
+                    if AudioPlayer.isLive then
+                        AudioPlayer.widgets.bufferText.setText("⚡ الكاش: يعمل | " .. percent .. "%")
+                    else
+                        local totalDur = mp.getDuration()
+                        if totalDur > 0 then
+                            local cachedMs = math.floor((percent / 100) * totalDur)
+                            local currentMs = mp.getCurrentPosition()
+                            local aheadMs = math.max(0, cachedMs - currentMs)
+                            local aheadMins = math.floor(aheadMs / 60000)
+                            local aheadSecs = math.floor((aheadMs % 60000) / 1000)
+                            AudioPlayer.widgets.bufferText.setText(string.format("⚡ محمل مسبقاً: %02d:%02d", aheadMins, aheadSecs))
+                        end
+                    end
+                end
             end
         })
 
@@ -1956,8 +2033,8 @@ function AudioPlayer.startTimer()
             AudioPlayer.lastRxBytes = rx
 
             if current == AudioPlayer.lastPosition then
-                -- Strong Anti-Buffering: Reduced from 15s to 5s
-                if AudioPlayer.lastPositionTime > 0 and (now - AudioPlayer.lastPositionTime) > 5000 then
+                -- Enhanced Anti-Buffering: Give player time to build progressive buffer
+                if AudioPlayer.lastPositionTime > 0 and (now - AudioPlayer.lastPositionTime) > 25000 then
                     AudioPlayer.lastPositionTime = now
                     if not AudioPlayer.isManualStop then
                          AudioPlayer.attemptRetry()
@@ -2147,7 +2224,11 @@ function AudioPlayer.showUI()
         },
         
         {
-            LinearLayout, orientation="horizontal", layout_width="fill", layout_marginBottom="12dp",
+            LinearLayout, orientation="horizontal", layout_width="fill", layout_marginBottom="12dp", gravity="center",
+            { TextView, id="pBufferText", text="⚡ الكاش: 0%", textColor="#00FF00", textSize="12sp",
+              layout_weight="1", gravity="center", focusable=true,
+              contentDescription="حالة التحميل المسبق"
+            },
             { TextView, id="pSpeedText", text="⚡ 0 KB/s", textColor=COL_ACCENT_START,
               layout_weight="1", gravity="center", focusable=true,
               contentDescription="سرعة الإنترنت: صفر كيلوبايت في الثانية"
@@ -2223,6 +2304,7 @@ function AudioPlayer.showUI()
     AudioPlayer.widgets.playBtn = pPlay
     AudioPlayer.widgets.favBtn = pFav
     AudioPlayer.widgets.speedText = pSpeedText
+    AudioPlayer.widgets.bufferText = pBufferText
     
     if pSeek then
         pSeek.setOnSeekBarChangeListener{
@@ -2263,7 +2345,7 @@ function preparePlaylist(data, type, seriesId, seriesName)
         local name = v.name or v.stream_display_name or (v.title and "E"..v.episode_num.." "..v.title) or "Unknown"
         local id = v.stream_id or v.id 
         local ext = v.container_extension or "mp4"
-        if type == "live" then ext = "m3u8" end
+        if type == "live" then ext = "ts" end
         
         local baseUrl = ""
         if type == "live" then baseUrl = "/live/"
@@ -2611,7 +2693,7 @@ function performSearchRequests(query)
                         type = "live",
                         name = "[📡 بث] "..v.name,
                         stream_id = v.stream_id,
-                        container_extension = "m3u8"
+                        container_extension = "ts"
                     })
                 end
             end
