@@ -42,8 +42,8 @@ local json = require "cjson"
 function makeSeekBarAccessible(seekBar, fwdFunc, bwdFunc)
     if not seekBar then return end
 
-    seekBar.setAccessibilityDelegate(luajava.override(View.AccessibilityDelegate, {
-        performAccessibilityAction = function(super, host, action, args)
+    local delegate = View.AccessibilityDelegate({
+        performAccessibilityAction = function(host, action, args)
             if action == AccessibilityNodeInfo.ACTION_SCROLL_FORWARD then
                 fwdFunc()
                 return true
@@ -51,10 +51,10 @@ function makeSeekBarAccessible(seekBar, fwdFunc, bwdFunc)
                 bwdFunc()
                 return true
             end
-            return super.performAccessibilityAction(host, action, args)
+            return false -- Graceful fallback, avoid cyclical host.performAccessibilityAction
         end,
-        onInitializeAccessibilityNodeInfo = function(super, host, info)
-            super.onInitializeAccessibilityNodeInfo(host, info)
+        onInitializeAccessibilityNodeInfo = function(host, info)
+            -- Avoid host.onInitializeAccessibilityNodeInfo(info) as it causes infinite loop in Lua
             info.setClassName("android.widget.SeekBar")
             if Build.VERSION.SDK_INT >= 21 then
                 info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD)
@@ -62,7 +62,9 @@ function makeSeekBarAccessible(seekBar, fwdFunc, bwdFunc)
             end
             info.setScrollable(true)
         end
-    }))
+    })
+
+    pcall(function() seekBar.setAccessibilityDelegate(delegate) end)
 end
 
 function formatSpeed(bytes)
@@ -1109,33 +1111,35 @@ function VideoPlayer.setupVideoView()
             end
         })
         
-        -- Handle explicit buffering percentage
-        videoView.setOnBufferingUpdateListener(MediaPlayer.OnBufferingUpdateListener{
-            onBufferingUpdate = function(mp, percent)
-                if VideoPlayer.widgets.seek then
-                    VideoPlayer.widgets.seek.setSecondaryProgress(math.floor((percent / 100) * VideoPlayer.widgets.seek.getMax()))
-                end
-
-                if VideoPlayer.widgets.bufferText then
-                    if VideoPlayer.isLive then
-                        VideoPlayer.widgets.bufferText.setText("⚡ الكاش: يعمل | " .. percent .. "%")
-                    else
-                        local totalDur = mp.getDuration()
-                        if totalDur > 0 then
-                            local cachedMs = math.floor((percent / 100) * totalDur)
-                            local currentMs = mp.getCurrentPosition()
-                            local aheadMs = math.max(0, cachedMs - currentMs)
-                            local aheadMins = math.floor(aheadMs / 60000)
-                            local aheadSecs = math.floor((aheadMs % 60000) / 1000)
-                            VideoPlayer.widgets.bufferText.setText(string.format("⚡ محمل مسبقاً: %02d:%02d", aheadMins, aheadSecs))
-                        end
-                    end
-                end
-            end
-        })
-
         videoView.setOnPreparedListener(MediaPlayer.OnPreparedListener{
             onPrepared = function(mp)
+                -- Handle explicit buffering percentage
+                mp.setOnBufferingUpdateListener(MediaPlayer.OnBufferingUpdateListener{
+                    onBufferingUpdate = function(m_mp, percent)
+                        if VideoPlayer.widgets.seek then
+                            VideoPlayer.widgets.seek.setSecondaryProgress(math.floor((percent / 100) * VideoPlayer.widgets.seek.getMax()))
+                        end
+
+                        if VideoPlayer.widgets.bufferText then
+                            if VideoPlayer.isLive then
+                                VideoPlayer.widgets.bufferText.setText("⚡ الكاش: يعمل | " .. percent .. "%")
+                            else
+                                pcall(function()
+                                    local totalDur = m_mp.getDuration()
+                                    if totalDur > 0 then
+                                        local cachedMs = math.floor((percent / 100) * totalDur)
+                                        local currentMs = m_mp.getCurrentPosition()
+                                        local aheadMs = math.max(0, cachedMs - currentMs)
+                                        local aheadMins = math.floor(aheadMs / 60000)
+                                        local aheadSecs = math.floor((aheadMs % 60000) / 1000)
+                                        VideoPlayer.widgets.bufferText.setText(string.format("⚡ محمل مسبقاً: %02d:%02d", aheadMins, aheadSecs))
+                                    end
+                                end)
+                            end
+                        end
+                    end
+                })
+
                 VideoPlayer.isPrepared = true
                 VideoPlayer.isSilentRetry = false 
                 VideoPlayer.lastPosition = -1
@@ -1704,7 +1708,7 @@ function AudioPlayer.init()
         })
 
         AudioPlayer.player.setOnBufferingUpdateListener(MediaPlayer.OnBufferingUpdateListener{
-            onBufferingUpdate = function(mp, percent)
+            onBufferingUpdate = function(m_mp, percent)
                 if AudioPlayer.widgets.seek then
                     AudioPlayer.widgets.seek.setSecondaryProgress(math.floor((percent / 100) * AudioPlayer.widgets.seek.getMax()))
                 end
@@ -1713,15 +1717,17 @@ function AudioPlayer.init()
                     if AudioPlayer.isLive then
                         AudioPlayer.widgets.bufferText.setText("⚡ الكاش: يعمل | " .. percent .. "%")
                     else
-                        local totalDur = mp.getDuration()
-                        if totalDur > 0 then
-                            local cachedMs = math.floor((percent / 100) * totalDur)
-                            local currentMs = mp.getCurrentPosition()
-                            local aheadMs = math.max(0, cachedMs - currentMs)
-                            local aheadMins = math.floor(aheadMs / 60000)
-                            local aheadSecs = math.floor((aheadMs % 60000) / 1000)
-                            AudioPlayer.widgets.bufferText.setText(string.format("⚡ محمل مسبقاً: %02d:%02d", aheadMins, aheadSecs))
-                        end
+                        pcall(function()
+                            local totalDur = m_mp.getDuration()
+                            if totalDur > 0 then
+                                local cachedMs = math.floor((percent / 100) * totalDur)
+                                local currentMs = m_mp.getCurrentPosition()
+                                local aheadMs = math.max(0, cachedMs - currentMs)
+                                local aheadMins = math.floor(aheadMs / 60000)
+                                local aheadSecs = math.floor((aheadMs % 60000) / 1000)
+                                AudioPlayer.widgets.bufferText.setText(string.format("⚡ محمل مسبقاً: %02d:%02d", aheadMins, aheadSecs))
+                            end
+                        end)
                     end
                 end
             end
