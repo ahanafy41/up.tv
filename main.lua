@@ -555,6 +555,30 @@ function VideoPlayer.repair()
     VideoPlayer.setupVideoView()
 end
 
+function VideoPlayer.playExternal()
+    if not VideoPlayer.currentUrl then return end
+
+    pcall(function()
+        local intent = Intent(Intent.ACTION_VIEW)
+        local uri = Uri.parse(VideoPlayer.currentUrl)
+        intent.setDataAndType(uri, "video/*")
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+        -- Try to find a handler for this intent (e.g. VLC, MX Player)
+        local resolveInfo = activity.getPackageManager().resolveActivity(intent, 0)
+        if resolveInfo ~= nil then
+            speak("جاري الفتح في المشغل الخارجي...")
+            -- Pause current player
+            if VideoPlayer.isPlaying then
+                VideoPlayer.togglePlay()
+            end
+            activity.startActivity(intent)
+        else
+            speak("لا يوجد مشغل فيديو خارجي مثبت على هاتفك مثل VLC")
+        end
+    end)
+end
+
 function VideoPlayer.init()
 end
 
@@ -877,7 +901,7 @@ function VideoPlayer.showVideoUI()
                 {
                     Button,
                     id = "vRepairBtn",
-                    text = "🔧 إصلاح البث",
+                    text = "🔧 إصلاح",
                     textSize = "14sp",
                     textColor = "#FFFFFF",
                     backgroundColor = "#44000000",
@@ -886,6 +910,20 @@ function VideoPlayer.showVideoUI()
                     focusable = true,
                     contentDescription = "زر إصلاح الاتصال عند حدوث تقطيع",
                     onClick = function() VideoPlayer.repair() end
+                },
+                { Space, layout_width = "4dp" },
+                {
+                    Button,
+                    id = "vExtBtn",
+                    text = "🚀 مشغل خارجي",
+                    textSize = "14sp",
+                    textColor = "#FFFFFF",
+                    backgroundColor = "#44000000",
+                    paddingLeft = "15dp",
+                    paddingRight = "15dp",
+                    focusable = true,
+                    contentDescription = "فتح في مشغل خارجي لتخطي حدود الكاش",
+                    onClick = function() VideoPlayer.playExternal() end
                 }
             },
             
@@ -1023,7 +1061,8 @@ function VideoPlayer.showVideoUI()
             vPlayBtn.setAccessibilityTraversalAfter(vTitle.getId())
             vSpeedText.setAccessibilityTraversalAfter(vPlayBtn.getId())
             vRepairBtn.setAccessibilityTraversalAfter(vSpeedText.getId())
-            vSeek.setAccessibilityTraversalAfter(vRepairBtn.getId())
+            vExtBtn.setAccessibilityTraversalAfter(vRepairBtn.getId())
+            vSeek.setAccessibilityTraversalAfter(vExtBtn.getId())
             vTime.setAccessibilityTraversalAfter(vSeek.getId())
             vPrevBtn.setAccessibilityTraversalAfter(vTime.getId())
             vRewBtn.setAccessibilityTraversalAfter(vPrevBtn.getId())
@@ -1621,6 +1660,28 @@ function AudioPlayer.repair()
         AudioPlayer.savePosition(pos)
     end
     AudioPlayer.playRetry()
+end
+
+function AudioPlayer.playExternal()
+    if not AudioPlayer.currentUrl then return end
+
+    pcall(function()
+        local intent = Intent(Intent.ACTION_VIEW)
+        local uri = Uri.parse(AudioPlayer.currentUrl)
+        intent.setDataAndType(uri, "audio/*")
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+        local resolveInfo = activity.getPackageManager().resolveActivity(intent, 0)
+        if resolveInfo ~= nil then
+            speak("جاري الفتح في المشغل الخارجي...")
+            if AudioPlayer.player and AudioPlayer.player.isPlaying() then
+                AudioPlayer.togglePlay()
+            end
+            activity.startActivity(intent)
+        else
+            speak("لا يوجد مشغل خارجي مثبت على هاتفك")
+        end
+    end)
 end
 
 function AudioPlayer.initMediaSession()
@@ -2289,9 +2350,14 @@ function AudioPlayer.showUI()
               contentDescription="سرعة الإنترنت: صفر كيلوبايت في الثانية"
             },
             { Button, id="btn_repair", text="🔧 إصلاح", textColor=COL_TEXT_PRI,
-              layout_width="100dp", layout_height="48dp",
+              layout_width="100dp", layout_height="48dp", layout_marginRight="4dp",
               contentDescription="زر إصلاح الاتصال",
               onClick=function() AudioPlayer.repair() end
+            },
+            { Button, id="btn_ext", text="🚀 مشغل خارجي", textColor=COL_TEXT_PRI,
+              layout_width="100dp", layout_height="48dp",
+              contentDescription="فتح في مشغل خارجي لتخطي حدود الكاش",
+              onClick=function() AudioPlayer.playExternal() end
             }
         },
 
@@ -2352,6 +2418,7 @@ function AudioPlayer.showUI()
     if btn_list then btn_list.setBackground(getClickableDrawable(btnColor, btnPress, radius)) end
     if btn_hide then btn_hide.setBackground(getClickableDrawable(btnColor, btnPress, radius)) end
     if btn_repair then btn_repair.setBackground(getClickableDrawable("#44000000", btnPress, 24)) end
+    if btn_ext then btn_ext.setBackground(getClickableDrawable("#44000000", btnPress, 24)) end
 
     AudioPlayer.widgets.title = pTitle
     AudioPlayer.widgets.seek = pSeek
