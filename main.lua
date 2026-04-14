@@ -15,6 +15,7 @@ import "android.media.session.PlaybackState"
 import "android.media.MediaMetadata"
 import "android.net.TrafficStats"
 import "android.os.Process"
+import "android.os.AsyncTask"
 import "com.androlua.Http"
 import "android.content.Context"
 import "android.graphics.BitmapFactory"
@@ -42,8 +43,8 @@ local json = require "cjson"
 function makeSeekBarAccessible(seekBar, fwdFunc, bwdFunc)
     if not seekBar then return end
 
-    seekBar.setAccessibilityDelegate(luajava.override(View.AccessibilityDelegate, {
-        performAccessibilityAction = function(super, host, action, args)
+    local delegate = View.AccessibilityDelegate({
+        performAccessibilityAction = function(host, action, args)
             if action == AccessibilityNodeInfo.ACTION_SCROLL_FORWARD then
                 fwdFunc()
                 return true
@@ -51,10 +52,10 @@ function makeSeekBarAccessible(seekBar, fwdFunc, bwdFunc)
                 bwdFunc()
                 return true
             end
-            return super.performAccessibilityAction(host, action, args)
+            return false -- Graceful fallback, avoid cyclical host.performAccessibilityAction
         end,
-        onInitializeAccessibilityNodeInfo = function(super, host, info)
-            super.onInitializeAccessibilityNodeInfo(host, info)
+        onInitializeAccessibilityNodeInfo = function(host, info)
+            -- Avoid host.onInitializeAccessibilityNodeInfo(info) as it causes infinite loop in Lua
             info.setClassName("android.widget.SeekBar")
             if Build.VERSION.SDK_INT >= 21 then
                 info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD)
@@ -62,7 +63,9 @@ function makeSeekBarAccessible(seekBar, fwdFunc, bwdFunc)
             end
             info.setScrollable(true)
         end
-    }))
+    })
+
+    pcall(function() seekBar.setAccessibilityDelegate(delegate) end)
 end
 
 function formatSpeed(bytes)
@@ -534,7 +537,8 @@ VideoPlayer = {
     lastPosition = -1,
     lastPositionTime = 0,
     lastRxBytes = 0,
-    speedHistory = {}
+    speedHistory = {},
+    accumulatedCacheBytes = 0
 }
 
 function VideoPlayer.repair()
@@ -549,6 +553,30 @@ function VideoPlayer.repair()
         VideoPlayer.savePosition(pos)
     end
     VideoPlayer.setupVideoView()
+end
+
+function VideoPlayer.playExternal()
+    if not VideoPlayer.currentUrl then return end
+
+    pcall(function()
+        local intent = Intent(Intent.ACTION_VIEW)
+        local uri = Uri.parse(VideoPlayer.currentUrl)
+        intent.setDataAndType(uri, "video/*")
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+        -- Try to find a handler for this intent (e.g. VLC, MX Player)
+        local resolveInfo = activity.getPackageManager().resolveActivity(intent, 0)
+        if resolveInfo ~= nil then
+            speak("جاري الفتح في المشغل الخارجي...")
+            -- Pause current player
+            if VideoPlayer.isPlaying then
+                VideoPlayer.togglePlay()
+            end
+            activity.startActivity(intent)
+        else
+            speak("لا يوجد مشغل فيديو خارجي مثبت على هاتفك مثل VLC")
+        end
+    end)
 end
 
 function VideoPlayer.init()
@@ -851,6 +879,16 @@ function VideoPlayer.showVideoUI()
                 importantForAccessibility = 2,
                 {
                     TextView,
+                    id = "vBufferText",
+                    text = "⚡ الكاش: 0%",
+                    textSize = "12sp",
+                    textColor = "#00FF00",
+                    padding = "10dp",
+                    focusable = true
+                },
+                { Space, layout_weight = "1" },
+                {
+                    TextView,
                     id = "vSpeedText",
                     text = "0 KB/s",
                     textSize = "14sp",
@@ -859,10 +897,11 @@ function VideoPlayer.showVideoUI()
                     focusable = true,
                     contentDescription = "سرعة الإنترنت: صفر كيلوبايت في الثانية"
                 },
+                { Space, layout_weight = "1" },
                 {
                     Button,
                     id = "vRepairBtn",
-                    text = "🔧 إصلاح البث",
+                    text = "🔧 إصلاح",
                     textSize = "14sp",
                     textColor = "#FFFFFF",
                     backgroundColor = "#44000000",
@@ -871,6 +910,20 @@ function VideoPlayer.showVideoUI()
                     focusable = true,
                     contentDescription = "زر إصلاح الاتصال عند حدوث تقطيع",
                     onClick = function() VideoPlayer.repair() end
+                },
+                { Space, layout_width = "4dp" },
+                {
+                    Button,
+                    id = "vExtBtn",
+                    text = "🚀 مشغل خارجي",
+                    textSize = "14sp",
+                    textColor = "#FFFFFF",
+                    backgroundColor = "#44000000",
+                    paddingLeft = "15dp",
+                    paddingRight = "15dp",
+                    focusable = true,
+                    contentDescription = "فتح في مشغل خارجي لتخطي حدود الكاش",
+                    onClick = function() VideoPlayer.playExternal() end
                 }
             },
             
@@ -1001,13 +1054,15 @@ function VideoPlayer.showVideoUI()
     VideoPlayer.widgets.fsBtn = vFsBtn
     VideoPlayer.widgets.controlLayer = vControlLayer
     VideoPlayer.widgets.speedText = vSpeedText
+    VideoPlayer.widgets.bufferText = vBufferText
     
     pcall(function()
         if Build.VERSION.SDK_INT >= 22 then
             vPlayBtn.setAccessibilityTraversalAfter(vTitle.getId())
             vSpeedText.setAccessibilityTraversalAfter(vPlayBtn.getId())
             vRepairBtn.setAccessibilityTraversalAfter(vSpeedText.getId())
-            vSeek.setAccessibilityTraversalAfter(vRepairBtn.getId())
+            vExtBtn.setAccessibilityTraversalAfter(vRepairBtn.getId())
+            vSeek.setAccessibilityTraversalAfter(vExtBtn.getId())
             vTime.setAccessibilityTraversalAfter(vSeek.getId())
             vPrevBtn.setAccessibilityTraversalAfter(vTime.getId())
             vRewBtn.setAccessibilityTraversalAfter(vPrevBtn.getId())
@@ -1048,6 +1103,7 @@ function VideoPlayer.setupVideoView()
     VideoPlayer.isManualStop = false -- Fix: State Reset
     VideoPlayer.lastPosition = -1
     VideoPlayer.lastPositionTime = 0
+    VideoPlayer.accumulatedCacheBytes = 0
     
     if VideoPlayer.widgets.loading then
         VideoPlayer.widgets.loading.setVisibility(View.VISIBLE)
@@ -1066,15 +1122,26 @@ function VideoPlayer.setupVideoView()
 
         videoView.setOnInfoListener(MediaPlayer.OnInfoListener{
             onInfo = function(mp, what, extra)
+                if what == 701 then
+                    if VideoPlayer.widgets.bufferText then
+                        VideoPlayer.widgets.bufferText.setText("⚡ جاري التحميل...")
+                        VideoPlayer.widgets.bufferText.setContentDescription("الكاش: جاري التحميل")
+                    end
+                elseif what == 702 or what == 3 then
+                    if VideoPlayer.widgets.bufferText then
+                        VideoPlayer.widgets.bufferText.setText("⚡ يعمل (مستقر)")
+                        VideoPlayer.widgets.bufferText.setContentDescription("الكاش: يعمل ومستقر")
+                    end
+                end
                 if what == 701 then -- MEDIA_INFO_BUFFERING_START
                     if VideoPlayer.widgets.loading then VideoPlayer.widgets.loading.setVisibility(View.VISIBLE) end
-                    -- Strong Anti-Buffering: if buffering takes > 8s, force refresh
+                    -- Enhanced Anti-Buffering: Give player more time to build cache (25s) before killing it
                     if VideoPlayer.bufferTimer then VideoPlayer.bufferTimer.stop() end
                     VideoPlayer.bufferTimer = Ticker()
-                    VideoPlayer.bufferTimer.Period = 8000
+                    VideoPlayer.bufferTimer.Period = 25000
                     VideoPlayer.bufferTimer.onTick = function()
                         VideoPlayer.bufferTimer.stop()
-                        if not VideoPlayer.isManualStop and videoView.isPlaying() == false then
+                        if VideoPlayer.isLive and not VideoPlayer.isManualStop and videoView.isPlaying() == false then
                              VideoPlayer.attemptRetry()
                         end
                     end
@@ -1089,6 +1156,32 @@ function VideoPlayer.setupVideoView()
         
         videoView.setOnPreparedListener(MediaPlayer.OnPreparedListener{
             onPrepared = function(mp)
+                -- Handle explicit buffering percentage
+                mp.setOnBufferingUpdateListener(MediaPlayer.OnBufferingUpdateListener{
+                    onBufferingUpdate = function(m_mp, percent)
+                        if VideoPlayer.widgets.seek then
+                            VideoPlayer.widgets.seek.setSecondaryProgress(math.floor((percent / 100) * VideoPlayer.widgets.seek.getMax()))
+                        end
+
+                        if VideoPlayer.widgets.bufferText then
+                            if not VideoPlayer.isLive then
+                                pcall(function()
+                                    local totalDur = m_mp.getDuration()
+                                    if totalDur > 0 then
+                                        local cachedMs = math.floor((percent / 100) * totalDur)
+                                        local currentMs = m_mp.getCurrentPosition()
+                                        local aheadMs = math.max(0, cachedMs - currentMs)
+                                        local aheadMins = math.floor(aheadMs / 60000)
+                                        local aheadSecs = math.floor((aheadMs % 60000) / 1000)
+                                        VideoPlayer.widgets.bufferText.setText(string.format("⚡ محمل مسبقاً: %02d:%02d", aheadMins, aheadSecs))
+                                        VideoPlayer.widgets.bufferText.setContentDescription(string.format("تم تحميل الكاش مسبقاً بمقدار %d دقيقة و %d ثانية", aheadMins, aheadSecs))
+                                    end
+                                end)
+                            end
+                        end
+                    end
+                })
+
                 VideoPlayer.isPrepared = true
                 VideoPlayer.isSilentRetry = false 
                 VideoPlayer.lastPosition = -1
@@ -1120,7 +1213,16 @@ function VideoPlayer.setupVideoView()
         videoView.setOnErrorListener(MediaPlayer.OnErrorListener{
             onError = function(mp, what, extra)
                 if not VideoPlayer.isManualStop then
-                    VideoPlayer.attemptRetry() -- Clean: No speak
+                    if VideoPlayer.isLive then
+                        VideoPlayer.attemptRetry()
+                    else
+                        if VideoPlayer.widgets.bufferText then
+                            VideoPlayer.widgets.bufferText.setText("⚠️ خطأ في التشغيل")
+                        end
+                        if VideoPlayer.widgets.loading then VideoPlayer.widgets.loading.setVisibility(View.GONE) end
+                        VideoPlayer.isPlaying = false
+                        VideoPlayer.updateUIState(false)
+                    end
                 end
                 return true
             end
@@ -1133,18 +1235,30 @@ function VideoPlayer.setupVideoView()
                          VideoPlayer.attemptRetry()
                     end
                 else
-                    local item = VideoPlayer.getCurrentItem()
-                    VideoPlayer.savePosition(0)
-                    
-                    if item.type == "movie" then
-                        HistoryManager.remove(item.id)
-                        VideoPlayer.stop()
-                    elseif VideoPlayer.currentIndex < #VideoPlayer.playlist then
-                        speak("بدء الحلقة التالية")
-                        VideoPlayer.next()
+                    local duration = mp.getDuration()
+                    local current = mp.getCurrentPosition()
+                    if duration > 0 and (duration - current) > 10000 then
+                        -- Prevent endless retry loops on VOD. Just halt on error/completion stall
+                        if VideoPlayer.widgets.bufferText then
+                            VideoPlayer.widgets.bufferText.setText("⚠️ انقطع الاتصال")
+                        end
+                        if VideoPlayer.widgets.loading then VideoPlayer.widgets.loading.setVisibility(View.GONE) end
+                        VideoPlayer.isPlaying = false
+                        VideoPlayer.updateUIState(false)
                     else
-                        speak("انتهى الموسم")
-                        VideoPlayer.stop()
+                        local item = VideoPlayer.getCurrentItem()
+                        VideoPlayer.savePosition(0)
+
+                        if item.type == "movie" then
+                            HistoryManager.remove(item.id)
+                            VideoPlayer.stop()
+                        elseif VideoPlayer.currentIndex < #VideoPlayer.playlist then
+                            speak("بدء الحلقة التالية")
+                            VideoPlayer.next()
+                        else
+                            speak("انتهى الموسم")
+                            VideoPlayer.stop()
+                        end
                     end
                 end
             end
@@ -1194,30 +1308,18 @@ function VideoPlayer.togglePlay()
     local isPlaying = videoView.isPlaying()
     
     if isPlaying then
-        if VideoPlayer.isLive then
-            VideoPlayer.isManualStop = true -- Fix: Pause Logic
-            videoView.stopPlayback()
-            VideoPlayer.isPlaying = false
-            VideoPlayer.updateUIState(false)
-        else
-            videoView.pause()
-            VideoPlayer.isPlaying = false
+        VideoPlayer.isManualStop = true
+        videoView.pause()
+        VideoPlayer.isPlaying = false
+        if not VideoPlayer.isLive then
             VideoPlayer.savePosition(videoView.getCurrentPosition())
-            VideoPlayer.updateUIState(false)
         end
+        VideoPlayer.updateUIState(false)
     else
-        VideoPlayer.isManualStop = false -- Fix: Resume Logic
-        if VideoPlayer.isLive then
-            VideoPlayer.isSilentRetry = true
-            if VideoPlayer.widgets.loading then
-                VideoPlayer.widgets.loading.setVisibility(View.VISIBLE)
-            end
-            VideoPlayer.setupVideoView()
-        else
-            videoView.start()
-            VideoPlayer.isPlaying = true
-            VideoPlayer.updateUIState(true)
-        end
+        VideoPlayer.isManualStop = false
+        videoView.start()
+        VideoPlayer.isPlaying = true
+        VideoPlayer.updateUIState(true)
     end
 end
 
@@ -1239,6 +1341,7 @@ function VideoPlayer.stop()
     if VideoPlayer.bufferTimer then VideoPlayer.bufferTimer.stop() end
     VideoPlayer.lastRxBytes = 0
     VideoPlayer.speedHistory = {}
+    VideoPlayer.accumulatedCacheBytes = 0
     if VideoPlayer.uiHideTimer then VideoPlayer.uiHideTimer.stop(); VideoPlayer.uiHideTimer = nil end
     VideoPlayer.abandonAudioFocus()
     VideoPlayer.cancelNotification()
@@ -1355,17 +1458,18 @@ function VideoPlayer.startTimer()
     local tickCount = 0
     VideoPlayer.timer.onTick = function()
         local videoView = VideoPlayer.widgets.videoView
-        if videoView and VideoPlayer.isPlaying and VideoPlayer.widgets.seek then
+        if videoView and VideoPlayer.widgets.seek then
             pcall(function()
                 local current = videoView.getCurrentPosition()
-
-                -- Watchdog for live streams (and stalled VOD)
                 local now = System.currentTimeMillis()
 
-                -- Internet Speed Calculation (3-second moving average)
+                -- Internet Speed and Cache Calculation (always run even if paused)
                 local rx = TrafficStats.getUidRxBytes(Process.myUid())
                 if VideoPlayer.lastRxBytes > 0 then
                     local diff = rx - VideoPlayer.lastRxBytes
+                    if diff > 0 then
+                        VideoPlayer.accumulatedCacheBytes = VideoPlayer.accumulatedCacheBytes + diff
+                    end
                     table.insert(VideoPlayer.speedHistory, diff)
                     if #VideoPlayer.speedHistory > 3 then table.remove(VideoPlayer.speedHistory, 1) end
 
@@ -1378,20 +1482,30 @@ function VideoPlayer.startTimer()
                         VideoPlayer.widgets.speedText.setText("⚡ " .. speedStr)
                         VideoPlayer.widgets.speedText.setContentDescription("سرعة الإنترنت الحالية: " .. speedA11y)
                     end
+
+                    if VideoPlayer.isLive and VideoPlayer.widgets.bufferText then
+                        local mb = VideoPlayer.accumulatedCacheBytes / (1024 * 1024)
+                        local formattedMb = string.format("%.1f", mb)
+                        VideoPlayer.widgets.bufferText.setText("⚡ الكاش: " .. formattedMb .. " MB")
+                        VideoPlayer.widgets.bufferText.setContentDescription("تم تحميل " .. formattedMb .. " ميجابايت من البث المباشر")
+                    end
                 end
                 VideoPlayer.lastRxBytes = rx
 
-                if current == VideoPlayer.lastPosition then
-                    -- Strong Anti-Buffering: Reduced from 15s to 5s for aggressive recovery
-                    if VideoPlayer.lastPositionTime > 0 and (now - VideoPlayer.lastPositionTime) > 5000 then
-                        VideoPlayer.lastPositionTime = now
-                        if not VideoPlayer.isManualStop then
-                            VideoPlayer.attemptRetry()
+                -- Watchdog: Only track if playing
+                if VideoPlayer.isPlaying then
+                    if current == VideoPlayer.lastPosition then
+                        -- Only apply watchdog to Live streams and ONLY if not paused manually
+                        if VideoPlayer.isLive and not VideoPlayer.isManualStop then
+                            if VideoPlayer.lastPositionTime > 0 and (now - VideoPlayer.lastPositionTime) > 25000 then
+                                VideoPlayer.lastPositionTime = now
+                                VideoPlayer.attemptRetry()
+                            end
                         end
+                    else
+                        VideoPlayer.lastPosition = current
+                        VideoPlayer.lastPositionTime = now
                     end
-                else
-                    VideoPlayer.lastPosition = current
-                    VideoPlayer.lastPositionTime = now
                 end
 
                 local total = videoView.getDuration()
@@ -1414,14 +1528,16 @@ function VideoPlayer.startTimer()
                 end
                 VideoPlayer.widgets.seek.setContentDescription(readableDesc)
                 
-                tickCount = tickCount + 1
-                if tickCount >= 10 then
-                    tickCount = 0
-                    local item = VideoPlayer.getCurrentItem()
-                    if item and item.id and not VideoPlayer.isLive then
-                        HistoryManager.updatePosition(item.id, current, total)
-                        if current > 5000 then
-                            setData("resume_"..item.id, tostring(current))
+                if VideoPlayer.isPlaying then
+                    tickCount = tickCount + 1
+                    if tickCount >= 10 then
+                        tickCount = 0
+                        local item = VideoPlayer.getCurrentItem()
+                        if item and item.id and not VideoPlayer.isLive then
+                            HistoryManager.updatePosition(item.id, current, total)
+                            if current > 5000 then
+                                setData("resume_"..item.id, tostring(current))
+                            end
                         end
                     end
                 end
@@ -1528,6 +1644,7 @@ AudioPlayer = {
     lastPositionTime = 0,
     lastRxBytes = 0,
     speedHistory = {},
+    accumulatedCacheBytes = 0,
     
     sleepTargetTime = nil 
 }
@@ -1543,6 +1660,28 @@ function AudioPlayer.repair()
         AudioPlayer.savePosition(pos)
     end
     AudioPlayer.playRetry()
+end
+
+function AudioPlayer.playExternal()
+    if not AudioPlayer.currentUrl then return end
+
+    pcall(function()
+        local intent = Intent(Intent.ACTION_VIEW)
+        local uri = Uri.parse(AudioPlayer.currentUrl)
+        intent.setDataAndType(uri, "audio/*")
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+        local resolveInfo = activity.getPackageManager().resolveActivity(intent, 0)
+        if resolveInfo ~= nil then
+            speak("جاري الفتح في المشغل الخارجي...")
+            if AudioPlayer.player and AudioPlayer.player.isPlaying() then
+                AudioPlayer.togglePlay()
+            end
+            activity.startActivity(intent)
+        else
+            speak("لا يوجد مشغل خارجي مثبت على هاتفك")
+        end
+    end)
 end
 
 function AudioPlayer.initMediaSession()
@@ -1613,9 +1752,11 @@ function AudioPlayer.init()
                     local duration = mp.getDuration()
                     local current = mp.getCurrentPosition()
                     if duration > 0 and (duration - current) > 10000 then
-                        speak("انقطع الاتصال، استكمال...")
-                        AudioPlayer.savePosition(current) 
-                        AudioPlayer.playRetry() 
+                        -- Prevent endless retry loops on VOD. Just halt on error/completion stall
+                        if AudioPlayer.widgets.bufferText then
+                            AudioPlayer.widgets.bufferText.setText("⚠️ انقطع الاتصال")
+                        end
+                        AudioPlayer.updateUIState(false)
                     else
                         AudioPlayer.savePosition(0)
                         local item = AudioPlayer.getCurrentItem()
@@ -1632,13 +1773,25 @@ function AudioPlayer.init()
         
         AudioPlayer.player.setOnInfoListener(MediaPlayer.OnInfoListener{
             onInfo = function(mp, what, extra)
+                if what == 701 then
+                    if AudioPlayer.widgets.bufferText then
+                        AudioPlayer.widgets.bufferText.setText("⚡ جاري التحميل...")
+                        AudioPlayer.widgets.bufferText.setContentDescription("الكاش: جاري التحميل")
+                    end
+                elseif what == 702 or what == 3 then
+                    if AudioPlayer.widgets.bufferText then
+                        AudioPlayer.widgets.bufferText.setText("⚡ يعمل (مستقر)")
+                        AudioPlayer.widgets.bufferText.setContentDescription("الكاش: يعمل ومستقر")
+                    end
+                end
+
                 if what == 701 then -- MEDIA_INFO_BUFFERING_START
                     if AudioPlayer.bufferTimer then AudioPlayer.bufferTimer.stop() end
                     AudioPlayer.bufferTimer = Ticker()
-                    AudioPlayer.bufferTimer.Period = 8000
+                    AudioPlayer.bufferTimer.Period = 25000
                     AudioPlayer.bufferTimer.onTick = function()
                         AudioPlayer.bufferTimer.stop()
-                        if not AudioPlayer.isManualStop and mp.isPlaying() == false then
+                        if AudioPlayer.isLive and not AudioPlayer.isManualStop and mp.isPlaying() == false then
                              AudioPlayer.attemptRetry()
                         end
                     end
@@ -1650,10 +1803,42 @@ function AudioPlayer.init()
             end
         })
 
+        AudioPlayer.player.setOnBufferingUpdateListener(MediaPlayer.OnBufferingUpdateListener{
+            onBufferingUpdate = function(m_mp, percent)
+                if AudioPlayer.widgets.seek then
+                    AudioPlayer.widgets.seek.setSecondaryProgress(math.floor((percent / 100) * AudioPlayer.widgets.seek.getMax()))
+                end
+
+                if AudioPlayer.widgets.bufferText then
+                    if not AudioPlayer.isLive then
+                        pcall(function()
+                            local totalDur = m_mp.getDuration()
+                            if totalDur > 0 then
+                                local cachedMs = math.floor((percent / 100) * totalDur)
+                                local currentMs = m_mp.getCurrentPosition()
+                                local aheadMs = math.max(0, cachedMs - currentMs)
+                                local aheadMins = math.floor(aheadMs / 60000)
+                                local aheadSecs = math.floor((aheadMs % 60000) / 1000)
+                                AudioPlayer.widgets.bufferText.setText(string.format("⚡ محمل مسبقاً: %02d:%02d", aheadMins, aheadSecs))
+                                AudioPlayer.widgets.bufferText.setContentDescription(string.format("تم تحميل الكاش مسبقاً بمقدار %d دقيقة و %d ثانية", aheadMins, aheadSecs))
+                            end
+                        end)
+                    end
+                end
+            end
+        })
+
         AudioPlayer.player.setOnErrorListener(MediaPlayer.OnErrorListener{
             onError=function(mp, what, extra)
                 if not AudioPlayer.isManualStop then
-                     AudioPlayer.attemptRetry() -- Clean: No speak
+                    if AudioPlayer.isLive then
+                        AudioPlayer.attemptRetry()
+                    else
+                        if AudioPlayer.widgets.bufferText then
+                            AudioPlayer.widgets.bufferText.setText("⚠️ خطأ في التشغيل")
+                        end
+                        AudioPlayer.updateUIState(false)
+                    end
                 end
                 return true
             end
@@ -1760,10 +1945,12 @@ function AudioPlayer.executeLoad()
     AudioPlayer.isManualStop = false -- Fix: State Reset
     AudioPlayer.lastPosition = -1
     AudioPlayer.lastPositionTime = 0
+    AudioPlayer.accumulatedCacheBytes = 0
     pcall(function()
         local uri = Uri.parse(AudioPlayer.currentUrl)
         local headers = HashMap()
         headers.put("User-Agent", "VLC/3.0.13 LibVLC/3.0.13")
+
         AudioPlayer.player.setDataSource(activity, uri, headers)
         AudioPlayer.player.prepareAsync()
     end)
@@ -1793,29 +1980,20 @@ function AudioPlayer.togglePlay()
     lastActionTime = now
 
     if AudioPlayer.player.isPlaying() then
-        if AudioPlayer.isLive then
-             AudioPlayer.isManualStop = true -- Fix: Pause Logic
-             AudioPlayer.player.reset() 
-             AudioPlayer.updateUIState(false)
-             speak("إيقاف (مباشر)")
-        else
-             AudioPlayer.player.pause()
+        AudioPlayer.isManualStop = true
+        AudioPlayer.player.pause()
+        if not AudioPlayer.isLive then
              AudioPlayer.savePosition(AudioPlayer.player.getCurrentPosition())
-             AudioPlayer.updateUIState(false)
-             speak("إيقاف مؤقت")
         end
+        AudioPlayer.updateUIState(false)
+        speak("إيقاف مؤقت")
         if AudioPlayer.bufferTimer then AudioPlayer.bufferTimer.stop() end
     else
         AudioPlayer.requestAudioFocus()
-        AudioPlayer.isManualStop = false -- Fix: Resume Logic
-        if AudioPlayer.isLive then
-             AudioPlayer.isSilentRetry = true
-             AudioPlayer.executeLoad()
-        else
-            AudioPlayer.player.start()
-            AudioPlayer.updateUIState(true)
-            speak("تشغيل")
-        end
+        AudioPlayer.isManualStop = false
+        AudioPlayer.player.start()
+        AudioPlayer.updateUIState(true)
+        speak("تشغيل")
     end
 end
 
@@ -1836,6 +2014,7 @@ function AudioPlayer.stop()
         if AudioPlayer.bufferTimer then AudioPlayer.bufferTimer.stop() end
         AudioPlayer.lastRxBytes = 0
         AudioPlayer.speedHistory = {}
+        AudioPlayer.accumulatedCacheBytes = 0
     end
     AudioPlayer.abandonAudioFocus()
     AudioPlayer.cancelNotification()
@@ -1930,75 +2109,90 @@ function AudioPlayer.startTimer()
             return
         end
 
-        if AudioPlayer.player and AudioPlayer.player.isPlaying() and AudioPlayer.widgets.seek then
-            local current = AudioPlayer.player.getCurrentPosition()
+        if AudioPlayer.player and AudioPlayer.widgets.seek then
+            pcall(function()
+                local current = AudioPlayer.player.getCurrentPosition()
+                local now = System.currentTimeMillis()
 
-            -- Watchdog for live streams (and stalled VOD)
-            local now = System.currentTimeMillis()
+                -- Internet Speed and Cache Calculation (always run even if paused)
+                local rx = TrafficStats.getUidRxBytes(Process.myUid())
+                if AudioPlayer.lastRxBytes > 0 then
+                    local diff = rx - AudioPlayer.lastRxBytes
+                    if diff > 0 then
+                        AudioPlayer.accumulatedCacheBytes = AudioPlayer.accumulatedCacheBytes + diff
+                    end
+                    table.insert(AudioPlayer.speedHistory, diff)
+                    if #AudioPlayer.speedHistory > 3 then table.remove(AudioPlayer.speedHistory, 1) end
 
-            -- Internet Speed Calculation (3-second moving average)
-            local rx = TrafficStats.getUidRxBytes(Process.myUid())
-            if AudioPlayer.lastRxBytes > 0 then
-                local diff = rx - AudioPlayer.lastRxBytes
-                table.insert(AudioPlayer.speedHistory, diff)
-                if #AudioPlayer.speedHistory > 3 then table.remove(AudioPlayer.speedHistory, 1) end
+                    local avg = 0
+                    for _, v in ipairs(AudioPlayer.speedHistory) do avg = avg + v end
+                    avg = avg / #AudioPlayer.speedHistory
 
-                local avg = 0
-                for _, v in ipairs(AudioPlayer.speedHistory) do avg = avg + v end
-                avg = avg / #AudioPlayer.speedHistory
+                    local speedStr, speedA11y = formatSpeed(math.floor(avg))
+                    if AudioPlayer.widgets.speedText then
+                        AudioPlayer.widgets.speedText.setText("⚡ " .. speedStr)
+                        AudioPlayer.widgets.speedText.setContentDescription("سرعة الإنترنت الحالية: " .. speedA11y)
+                    end
 
-                local speedStr, speedA11y = formatSpeed(math.floor(avg))
-                if AudioPlayer.widgets.speedText then
-                    AudioPlayer.widgets.speedText.setText("⚡ " .. speedStr)
-                    AudioPlayer.widgets.speedText.setContentDescription("سرعة الإنترنت الحالية: " .. speedA11y)
-                end
-            end
-            AudioPlayer.lastRxBytes = rx
-
-            if current == AudioPlayer.lastPosition then
-                -- Strong Anti-Buffering: Reduced from 15s to 5s
-                if AudioPlayer.lastPositionTime > 0 and (now - AudioPlayer.lastPositionTime) > 5000 then
-                    AudioPlayer.lastPositionTime = now
-                    if not AudioPlayer.isManualStop then
-                         AudioPlayer.attemptRetry()
+                    if AudioPlayer.isLive and AudioPlayer.widgets.bufferText then
+                        local mb = AudioPlayer.accumulatedCacheBytes / (1024 * 1024)
+                        local formattedMb = string.format("%.1f", mb)
+                        AudioPlayer.widgets.bufferText.setText("⚡ الكاش: " .. formattedMb .. " MB")
+                        AudioPlayer.widgets.bufferText.setContentDescription("تم تحميل " .. formattedMb .. " ميجابايت من البث المباشر")
                     end
                 end
-            else
-                AudioPlayer.lastPosition = current
-                AudioPlayer.lastPositionTime = now
-            end
+                AudioPlayer.lastRxBytes = rx
 
-            local total = AudioPlayer.player.getDuration()
-            if AudioPlayer.isLive or total <= 0 then total = 100 end 
-            
-            AudioPlayer.widgets.seek.setMax(total)
-            AudioPlayer.widgets.seek.setProgress(current)
-            
-            local cMins = math.floor(current/60000)
-            local cSecs = math.floor((current%60000)/1000)
-            local tMins = math.floor(total/60000)
-            local tSecs = math.floor((total%60000)/1000)
-
-            local t_str = AudioPlayer.isLive and "بث مباشر" or string.format("%02d:%02d", tMins, tSecs)
-            AudioPlayer.widgets.time.setText(string.format("%02d:%02d / %s", cMins, cSecs, t_str))
-
-            local readableDesc = string.format("تم تشغيل %d دقيقة و %d ثانية من أصل %d دقيقة", cMins, cSecs, tMins)
-            if AudioPlayer.isLive then
-                readableDesc = "بث مباشر"
-            end
-            AudioPlayer.widgets.seek.setContentDescription(readableDesc)
-            
-            tickCount = tickCount + 1
-            if tickCount >= 10 then
-                tickCount = 0
-                local item = AudioPlayer.getCurrentItem()
-                if item and item.id and not AudioPlayer.isLive then
-                    HistoryManager.updatePosition(item.id, current, total)
-                    if current > 5000 then
-                        setData("resume_"..item.id, tostring(current))
+                -- Watchdog: Only track if playing
+                if AudioPlayer.player.isPlaying() then
+                    if current == AudioPlayer.lastPosition then
+                        -- Only apply watchdog to Live streams and ONLY if not paused manually
+                        if AudioPlayer.isLive and not AudioPlayer.isManualStop then
+                            if AudioPlayer.lastPositionTime > 0 and (now - AudioPlayer.lastPositionTime) > 25000 then
+                                AudioPlayer.lastPositionTime = now
+                                AudioPlayer.attemptRetry()
+                            end
+                        end
+                    else
+                        AudioPlayer.lastPosition = current
+                        AudioPlayer.lastPositionTime = now
                     end
                 end
-            end
+
+                local total = AudioPlayer.player.getDuration()
+                if AudioPlayer.isLive or total <= 0 then total = 100 end
+
+                AudioPlayer.widgets.seek.setMax(total)
+                AudioPlayer.widgets.seek.setProgress(current)
+
+                local cMins = math.floor(current/60000)
+                local cSecs = math.floor((current%60000)/1000)
+                local tMins = math.floor(total/60000)
+                local tSecs = math.floor((total%60000)/1000)
+
+                local t_str = AudioPlayer.isLive and "بث مباشر" or string.format("%02d:%02d", tMins, tSecs)
+                AudioPlayer.widgets.time.setText(string.format("%02d:%02d / %s", cMins, cSecs, t_str))
+
+                local readableDesc = string.format("تم تشغيل %d دقيقة و %d ثانية من أصل %d دقيقة", cMins, cSecs, tMins)
+                if AudioPlayer.isLive then
+                    readableDesc = "بث مباشر"
+                end
+                AudioPlayer.widgets.seek.setContentDescription(readableDesc)
+
+                if AudioPlayer.player.isPlaying() then
+                    tickCount = tickCount + 1
+                    if tickCount >= 10 then
+                        tickCount = 0
+                        local item = AudioPlayer.getCurrentItem()
+                        if item and item.id and not AudioPlayer.isLive then
+                            HistoryManager.updatePosition(item.id, current, total)
+                            if current > 5000 then
+                                setData("resume_"..item.id, tostring(current))
+                            end
+                        end
+                    end
+                end
+            end)
         end
     end
     AudioPlayer.timer.start()
@@ -2147,15 +2341,23 @@ function AudioPlayer.showUI()
         },
         
         {
-            LinearLayout, orientation="horizontal", layout_width="fill", layout_marginBottom="12dp",
+            LinearLayout, orientation="horizontal", layout_width="fill", layout_marginBottom="12dp", gravity="center",
+            { TextView, id="pBufferText", text="⚡ الكاش: 0%", textColor="#00FF00", textSize="12sp",
+              layout_weight="1", gravity="center", focusable=true
+            },
             { TextView, id="pSpeedText", text="⚡ 0 KB/s", textColor=COL_ACCENT_START,
               layout_weight="1", gravity="center", focusable=true,
               contentDescription="سرعة الإنترنت: صفر كيلوبايت في الثانية"
             },
             { Button, id="btn_repair", text="🔧 إصلاح", textColor=COL_TEXT_PRI,
-              layout_width="100dp", layout_height="48dp",
+              layout_width="100dp", layout_height="48dp", layout_marginRight="4dp",
               contentDescription="زر إصلاح الاتصال",
               onClick=function() AudioPlayer.repair() end
+            },
+            { Button, id="btn_ext", text="🚀 مشغل خارجي", textColor=COL_TEXT_PRI,
+              layout_width="100dp", layout_height="48dp",
+              contentDescription="فتح في مشغل خارجي لتخطي حدود الكاش",
+              onClick=function() AudioPlayer.playExternal() end
             }
         },
 
@@ -2216,6 +2418,7 @@ function AudioPlayer.showUI()
     if btn_list then btn_list.setBackground(getClickableDrawable(btnColor, btnPress, radius)) end
     if btn_hide then btn_hide.setBackground(getClickableDrawable(btnColor, btnPress, radius)) end
     if btn_repair then btn_repair.setBackground(getClickableDrawable("#44000000", btnPress, 24)) end
+    if btn_ext then btn_ext.setBackground(getClickableDrawable("#44000000", btnPress, 24)) end
 
     AudioPlayer.widgets.title = pTitle
     AudioPlayer.widgets.seek = pSeek
@@ -2223,6 +2426,7 @@ function AudioPlayer.showUI()
     AudioPlayer.widgets.playBtn = pPlay
     AudioPlayer.widgets.favBtn = pFav
     AudioPlayer.widgets.speedText = pSpeedText
+    AudioPlayer.widgets.bufferText = pBufferText
     
     if pSeek then
         pSeek.setOnSeekBarChangeListener{
@@ -2263,7 +2467,7 @@ function preparePlaylist(data, type, seriesId, seriesName)
         local name = v.name or v.stream_display_name or (v.title and "E"..v.episode_num.." "..v.title) or "Unknown"
         local id = v.stream_id or v.id 
         local ext = v.container_extension or "mp4"
-        if type == "live" then ext = "m3u8" end
+        if type == "live" then ext = "ts" end
         
         local baseUrl = ""
         if type == "live" then baseUrl = "/live/"
@@ -2611,7 +2815,7 @@ function performSearchRequests(query)
                         type = "live",
                         name = "[📡 بث] "..v.name,
                         stream_id = v.stream_id,
-                        container_extension = "m3u8"
+                        container_extension = "ts"
                     })
                 end
             end
