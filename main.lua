@@ -2140,6 +2140,11 @@ function AudioPlayer.showUI()
           end 
         },
         
+        { Button, id="btn_stop", text="⏹️ إيقاف البث تماماً", textColor=COL_TEXT_PRI,
+          layout_width="fill", layout_height="60dp", layout_marginBottom="12dp",
+          contentDescription="إيقاف البث تماماً",
+          onClick=function() AudioPlayer.stop() end
+        },
         { Button, id="btn_list", text="📑 القائمة", textColor=COL_TEXT_PRI, 
           layout_width="fill", layout_height="60dp", layout_marginBottom="12dp",
           contentDescription="عرض القائمة", 
@@ -2173,6 +2178,7 @@ function AudioPlayer.showUI()
     if btn_vidmode then btn_vidmode.setBackground(getClickableDrawable(btnColor, btnPress, radius)) end
     if btn_list then btn_list.setBackground(getClickableDrawable(btnColor, btnPress, radius)) end
     if btn_hide then btn_hide.setBackground(getClickableDrawable(btnColor, btnPress, radius)) end
+    if btn_stop then btn_stop.setBackground(getClickableDrawable(btnColor, btnPress, radius)) end
     if btn_repair then btn_repair.setBackground(getClickableDrawable("#44000000", btnPress, 24)) end
     if btn_ext then btn_ext.setBackground(getClickableDrawable("#44000000", btnPress, 24)) end
 
@@ -3100,6 +3106,15 @@ function main()
                     LinearLayout, orientation="vertical", layout_weight="1",
                     { TextView, text="مرحباً بعودتك", textSize="14sp", textColor=COL_TEXT_SEC, importantForAccessibility=2 },
                     { TextView, text=USER or "GUEST", textSize="24sp", Typeface=Typeface.DEFAULT_BOLD, textColor=COL_TEXT_PRI, importantForAccessibility=2 },
+                },
+                {
+                    TextView, text="⏹️", textSize="28sp", padding="12dp",
+                    contentDescription="إيقاف البث الإجباري", focusable=true, clickable=true,
+                    onClick=function()
+                        pcall(function() AudioPlayer.stop() end)
+                        pcall(function() VideoPlayer.stop() end)
+                        speak("تم إيقاف جميع المشغلات")
+                    end
                 },
                 {
                     TextView, text="🔍", textSize="28sp", padding="12dp", 
