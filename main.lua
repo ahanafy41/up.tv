@@ -3,6 +3,7 @@ import "android.app.*"
 import "android.os.Build"
 import "android.os.Bundle"
 import "android.os.PowerManager"
+import "android.net.wifi.WifiManager"
 import "android.widget.*"
 import "android.view.*"
 import "android.view.accessibility.AccessibilityNodeInfo"
@@ -537,7 +538,7 @@ function VideoPlayer.repair()
         VideoPlayer.savePosition(pos)
     end
     pcall(function()
-        videoView.stopPlayback()
+        VideoPlayer.widgets.videoView.stopPlayback()
     end)
     VideoPlayer.setupVideoView()
 end
@@ -990,7 +991,8 @@ function VideoPlayer.showVideoUI()
     }
     
     VideoPlayer.dialog = LuaDialog(activity)
-    VideoPlayer.dialog.requestWindowFeature(Window.FEATURE_NO_TITLE) 
+    VideoPlayer.dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+    VideoPlayer.dialog.getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     VideoPlayer.dialog.setView(loadlayout(layout))
     
     local win = VideoPlayer.dialog.getWindow()
@@ -1064,7 +1066,11 @@ function VideoPlayer.setupVideoView()
     if not videoView or not url then return end
     
     VideoPlayer.stopTimer() -- Stop UI updates immediately
-    pcall(function() videoView.stopPlayback() end) -- Ensure previous playback is fully stopped
+    pcall(function()
+        if videoView and videoView.isPlaying() then
+            videoView.stopPlayback()
+        end
+    end) -- Ensure previous playback is fully stopped
 
     VideoPlayer.isManualStop = false -- Fix: State Reset
     VideoPlayer.lastPosition = -1
@@ -1138,13 +1144,7 @@ function VideoPlayer.setupVideoView()
         videoView.setOnErrorListener(MediaPlayer.OnErrorListener{
             onError = function(mp, what, extra)
                 if not VideoPlayer.isManualStop then
-                    if VideoPlayer.isLive then
-                        VideoPlayer.attemptRetry()
-                    else
-                        if VideoPlayer.widgets.loading then VideoPlayer.widgets.loading.setVisibility(View.GONE) end
-                        VideoPlayer.isPlaying = false
-                        VideoPlayer.updateUIState(false)
-                    end
+                    VideoPlayer.attemptRetry() -- Retry for BOTH Live and VOD
                 end
                 return true
             end
@@ -1160,10 +1160,8 @@ function VideoPlayer.setupVideoView()
                     local duration = mp.getDuration()
                     local current = mp.getCurrentPosition()
                     if duration > 0 and (duration - current) > 10000 then
-                        -- Prevent endless retry loops on VOD. Just halt on error/completion stall
-                        if VideoPlayer.widgets.loading then VideoPlayer.widgets.loading.setVisibility(View.GONE) end
-                        VideoPlayer.isPlaying = false
-                        VideoPlayer.updateUIState(false)
+                        -- It stalled before ending (network drop), retry it
+                        VideoPlayer.attemptRetry()
                     else
                         local item = VideoPlayer.getCurrentItem()
                         VideoPlayer.savePosition(0)
@@ -1373,7 +1371,7 @@ function VideoPlayer.startTimer()
     local tickCount = 0
     VideoPlayer.timer.onTick = function()
         local videoView = VideoPlayer.widgets.videoView
-        if videoView and VideoPlayer.widgets.seek and VideoPlayer.isPrepared and VideoPlayer.isPlaying then
+        if videoView and VideoPlayer.widgets.seek and VideoPlayer.isPlaying then
             pcall(function()
                 local current = videoView.getCurrentPosition()
 
@@ -1493,6 +1491,7 @@ end
 AudioPlayer = {
     player = nil,
     playlist = {},
+    wifiLock = nil,
     currentIndex = 1,
     mediaSession = nil,
     timer = nil,
@@ -1609,6 +1608,15 @@ function AudioPlayer.init()
         AudioPlayer.player = MediaPlayer()
         AudioPlayer.player.setAudioStreamType(AudioManager.STREAM_MUSIC)
         AudioPlayer.player.setWakeMode(activity, PowerManager.PARTIAL_WAKE_LOCK)
+        pcall(function()
+            if not AudioPlayer.wifiLock then
+                local wifiManager = activity.getSystemService(Context.WIFI_SERVICE)
+                if wifiManager then
+                    AudioPlayer.wifiLock = wifiManager.createWifiLock(3, "XtreamAudioWifiLock")
+                    AudioPlayer.wifiLock.setReferenceCounted(false)
+                end
+            end
+        end)
         
         AudioPlayer.player.setOnCompletionListener(MediaPlayer.OnCompletionListener{
             onCompletion=function(mp)
@@ -1620,8 +1628,8 @@ function AudioPlayer.init()
                     local duration = mp.getDuration()
                     local current = mp.getCurrentPosition()
                     if duration > 0 and (duration - current) > 10000 then
-                        -- Prevent endless retry loops on VOD. Just halt on error/completion stall
-                        AudioPlayer.updateUIState(false)
+                        -- It stalled before ending (network drop), retry it
+                        AudioPlayer.attemptRetry()
                     else
                         AudioPlayer.savePosition(0)
                         local item = AudioPlayer.getCurrentItem()
@@ -1647,11 +1655,7 @@ function AudioPlayer.init()
         AudioPlayer.player.setOnErrorListener(MediaPlayer.OnErrorListener{
             onError=function(mp, what, extra)
                 if not AudioPlayer.isManualStop then
-                    if AudioPlayer.isLive then
-                        AudioPlayer.attemptRetry()
-                    else
-                        AudioPlayer.updateUIState(false)
-                    end
+                    AudioPlayer.attemptRetry() -- Retry for BOTH Live and VOD
                 end
                 return true
             end
@@ -1709,6 +1713,7 @@ function AudioPlayer.play(index)
     AudioPlayer.init()
     AudioPlayer.initMediaSession()
     AudioPlayer.requestAudioFocus()
+    pcall(function() if AudioPlayer.wifiLock then AudioPlayer.wifiLock.acquire() end end)
     
     if AudioPlayer.player.isPlaying() then
         AudioPlayer.savePosition(AudioPlayer.player.getCurrentPosition())
@@ -1803,6 +1808,7 @@ function AudioPlayer.togglePlay()
         speak("إيقاف مؤقت")
     else
         AudioPlayer.requestAudioFocus()
+        pcall(function() if AudioPlayer.wifiLock then AudioPlayer.wifiLock.acquire() end end)
         AudioPlayer.isManualStop = false
         AudioPlayer.player.start()
         AudioPlayer.updateUIState(true)
@@ -1826,6 +1832,7 @@ function AudioPlayer.stop()
         if AudioPlayer.retryTimer then AudioPlayer.retryTimer.stop() end
     end
     AudioPlayer.abandonAudioFocus()
+    pcall(function() if AudioPlayer.wifiLock and AudioPlayer.wifiLock.isHeld() then AudioPlayer.wifiLock.release() end end)
     AudioPlayer.cancelNotification()
     AudioPlayer.retryCount = 0
     AudioPlayer.isSilentRetry = false
@@ -1918,7 +1925,7 @@ function AudioPlayer.startTimer()
             return
         end
 
-        if AudioPlayer.player and AudioPlayer.widgets.seek and AudioPlayer.player.isPlaying() then
+        if AudioPlayer.player and AudioPlayer.widgets.seek then
             pcall(function()
                 local current = AudioPlayer.player.getCurrentPosition()
 
@@ -2161,6 +2168,7 @@ function AudioPlayer.showUI()
     AudioPlayer.dialog = LuaDialog(activity)
     AudioPlayer.dialog.getWindow().setBackgroundDrawable(ColorDrawable(0))
     AudioPlayer.dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+    AudioPlayer.dialog.getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     AudioPlayer.dialog.setView(loadlayout(layout))
     
     local btnColor = COL_SURFACE
