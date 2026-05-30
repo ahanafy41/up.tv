@@ -72,6 +72,15 @@ end
 local PREF_NAME = "XtreamPlayer_Data"
 local sharedPref = activity.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
 
+local DOWNLOADS_KEY = "xt_downloads_list"
+local DOWNLOAD_DIR = activity.getExternalFilesDir(None).getAbsolutePath() .. "/xtream_downloads"
+import "java.io.File"
+local dDir = File(DOWNLOAD_DIR)
+if not dDir.exists() then
+    dDir.mkdirs()
+end
+
+
 function getData(key, defaultVal)
     local val = sharedPref.getString(key, nil)
     return val or defaultVal
@@ -369,6 +378,257 @@ function FavoritesManager.clearAll()
     speak("تم مسح جميع المفضلة")
 end
 
+
+DownloadsManager = {
+    downloads = {}
+}
+
+function DownloadsManager.load()
+    local saved = getData(DOWNLOADS_KEY)
+    if saved and saved ~= "" then
+        local success, data = pcall(json.decode, saved)
+        if success and data then
+            DownloadsManager.downloads = data
+        end
+    end
+end
+
+function DownloadsManager.save()
+    local success, encoded = pcall(json.encode, DownloadsManager.downloads)
+    if success then
+        setData(DOWNLOADS_KEY, encoded)
+    end
+end
+
+function DownloadsManager.add(item, localPath)
+    for i, d in ipairs(DownloadsManager.downloads) do
+        if d.id == item.id then
+            table.remove(DownloadsManager.downloads, i)
+            break
+        end
+    end
+    local dItem = {
+        id = item.id,
+        name = item.name,
+        localPath = localPath,
+        type = item.type or "unknown",
+        downloadedAt = os.time(),
+        episode_num = item.episode_num or nil,
+        series_id = item.series_id or nil,
+        series_name = item.series_name or nil
+    }
+    table.insert(DownloadsManager.downloads, 1, dItem)
+    DownloadsManager.save()
+end
+
+function DownloadsManager.remove(itemId)
+    for i, d in ipairs(DownloadsManager.downloads) do
+        if d.id == itemId then
+            pcall(function()
+                local f = File(d.localPath)
+                if f.exists() then f.delete() end
+            end)
+            table.remove(DownloadsManager.downloads, i)
+            DownloadsManager.save()
+            return true
+        end
+    end
+    return false
+end
+
+function DownloadsManager.isDownloaded(itemId)
+    for _, d in ipairs(DownloadsManager.downloads) do
+        if d.id == itemId then return true end
+    end
+    return false
+end
+
+function DownloadsManager.getAll()
+    return DownloadsManager.downloads
+end
+
+DownloadQueue = {
+    queue = {},
+    isDownloading = false,
+    currentTask = nil,
+    dialog = nil,
+    widgets = {}
+}
+
+function DownloadQueue.enqueue(items)
+    local addedCount = 0
+    for _, item in ipairs(items) do
+        if not DownloadsManager.isDownloaded(item.id) then
+            local inQueue = false
+            for _, q in ipairs(DownloadQueue.queue) do
+                if q.id == item.id then inQueue = true break end
+            end
+            if not inQueue then
+                table.insert(DownloadQueue.queue, item)
+                addedCount = addedCount + 1
+            end
+        end
+    end
+
+    if addedCount > 0 then speak("بدء التنزيل") end
+
+    if #DownloadQueue.queue > 0 then
+        DownloadQueue.showProgressDialog()
+    end
+
+    if not DownloadQueue.isDownloading and #DownloadQueue.queue > 0 then
+        DownloadQueue.startNext()
+    end
+    if main_update_downloads_badge then main_update_downloads_badge() end
+end
+
+function DownloadQueue.showProgressDialog()
+    if DownloadQueue.dialog then
+        pcall(function() DownloadQueue.dialog.dismiss() end)
+        DownloadQueue.dialog = nil
+    end
+
+    local layout = {
+        LinearLayout,
+        orientation = "vertical",
+        padding = "24dp",
+        backgroundColor = "#161616",
+        layout_width = "fill",
+        {
+            TextView,
+            id = "dq_title",
+            text = "جاري التنزيل...",
+            textSize = "18sp",
+            textColor = "#FFFFFF",
+            Typeface = Typeface.DEFAULT_BOLD,
+            layout_marginBottom = "16dp",
+            focusable = true
+        },
+        {
+            ProgressBar,
+            id = "dq_progress",
+            style="?android:attr/progressBarStyleHorizontal",
+            layout_width = "fill",
+            layout_marginBottom = "8dp",
+            max = 100,
+            progress = 0
+        },
+        {
+            TextView,
+            id = "dq_percent",
+            text = "0%",
+            textSize = "14sp",
+            textColor = "#AAAAAA",
+            layout_marginBottom = "8dp",
+            focusable = true
+        },
+        {
+            TextView,
+            id = "dq_queue_info",
+            text = "متبقي: 0",
+            textSize = "12sp",
+            textColor = "#AAAAAA",
+            layout_marginBottom = "24dp",
+            focusable = true
+        },
+        {
+            Button,
+            text = "إخفاء (العمل في الخلفية)",
+            layout_width = "fill",
+            textColor = "#FFFFFF",
+            backgroundColor = "#44000000",
+            contentDescription = "إخفاء نافذة التنزيل لمواصلة التصفح",
+            onClick = function()
+                if DownloadQueue.dialog then pcall(function() DownloadQueue.dialog.dismiss() end); DownloadQueue.dialog = nil end
+            end
+        }
+    }
+
+    DownloadQueue.dialog = LuaDialog(activity)
+    DownloadQueue.dialog.setView(loadlayout(layout))
+    DownloadQueue.dialog.setCancelable(false)
+
+    DownloadQueue.widgets.title = dq_title
+    DownloadQueue.widgets.progress = dq_progress
+    DownloadQueue.widgets.percent = dq_percent
+    DownloadQueue.widgets.queue_info = dq_queue_info
+
+    local gd = GradientDrawable()
+    gd.setColor(Color.parseColor("#161616"))
+    gd.setCornerRadius(24)
+    DownloadQueue.dialog.getWindow().setBackgroundDrawable(gd)
+
+    DownloadQueue.dialog.show()
+end
+
+function DownloadQueue.startNext()
+    if #DownloadQueue.queue == 0 then
+        DownloadQueue.isDownloading = false
+        if DownloadQueue.dialog then
+            pcall(function() DownloadQueue.dialog.dismiss() end)
+            DownloadQueue.dialog = nil
+        end
+        speak("اكتملت جميع التنزيلات")
+        if main_update_downloads_badge then main_update_downloads_badge() end
+        return
+    end
+
+    DownloadQueue.isDownloading = true
+    local currentItem = table.remove(DownloadQueue.queue, 1)
+
+    local ext = currentItem.url:match("%.(%w+)$") or "mp4"
+    local localPath = DOWNLOAD_DIR .. "/" .. currentItem.id .. "." .. ext
+
+    if not DownloadQueue.dialog then
+        DownloadQueue.showProgressDialog()
+    end
+
+    if DownloadQueue.widgets.title then DownloadQueue.widgets.title.setText("تنزيل: " .. currentItem.name) end
+    if DownloadQueue.widgets.queue_info then DownloadQueue.widgets.queue_info.setText("متبقي في الطابور: " .. #DownloadQueue.queue) end
+
+    speak("بدأ تنزيل " .. currentItem.name)
+
+    DownloadQueue.currentTask = Http.download(currentItem.url, localPath, function(code, content)
+        if code == 200 then
+            DownloadsManager.add(currentItem, localPath)
+            speak("اكتمل تنزيل " .. currentItem.name)
+            DownloadQueue.startNext()
+        else
+            speak("فشل تنزيل " .. currentItem.name)
+            pcall(function() local f = File(localPath); if f.exists() then f.delete() end end)
+            DownloadQueue.startNext()
+        end
+    end)
+
+    if DownloadQueue.progressTicker then DownloadQueue.progressTicker.stop() end
+    DownloadQueue.progressTicker = Ticker()
+    DownloadQueue.progressTicker.Period = 1000
+    DownloadQueue.progressTicker.onTick = function()
+        if not DownloadQueue.isDownloading then
+            DownloadQueue.progressTicker.stop()
+            return
+        end
+
+        pcall(function()
+            local f = File(localPath)
+            if f.exists() then
+                local currentSize = f.length()
+                local mb = string.format("%.2f MB", currentSize / (1024 * 1024))
+                if DownloadQueue.widgets.percent then
+                    DownloadQueue.widgets.percent.setText("تم تنزيل: " .. mb)
+                    DownloadQueue.widgets.percent.setContentDescription("تم تنزيل " .. mb)
+                end
+                if DownloadQueue.widgets.progress then
+                    DownloadQueue.widgets.progress.setIndeterminate(true)
+                end
+            end
+        end)
+    end
+    DownloadQueue.progressTicker.start()
+end
+
+
+
 HistoryManager = {
     history = {}
 }
@@ -457,6 +717,7 @@ end
 
 FavoritesManager.load()
 HistoryManager.load()
+DownloadsManager.load()
 
 function getRoundedDrawable(color, radius)
   local gd = GradientDrawable()
@@ -2269,12 +2530,21 @@ function playContent(playlist, startIndex)
     end
 end
 
+
 function showPlayModeSelector(playlist, startIndex)
     local options = {
         "🎧 تشغيل صوت فقط",
         "📺 تشغيل فيديو"
     }
     
+    local item = playlist[startIndex]
+    local canDownload = item and item.type ~= "live"
+    if canDownload then
+        if not item.localPath then
+            table.insert(options, "⬇️ تنزيل المحتوى")
+        end
+    end
+
     local dlg = LuaDialog(activity)
     dlg.setTitle("اختر وضع التشغيل")
     dlg.setItems(options)
@@ -2284,16 +2554,19 @@ function showPlayModeSelector(playlist, startIndex)
             PLAYER_MODE = "audio"
             setData(PLAYER_MODE_KEY, "audio")
             AudioPlayer.loadList(playlist, startIndex)
-        else
+        elseif i == 2 then
             PLAYER_MODE = "video"
             setData(PLAYER_MODE_KEY, "video")
             VideoPlayer.loadList(playlist, startIndex)
+        elseif i == 3 and canDownload then
+            DownloadQueue.enqueue({playlist[startIndex]})
         end
     end)
     dlg.setNeutralButton("🏠 الرئيسية", function() main() end)
     dlg.setNegativeButton("🔙 رجوع", nil)
     dlg.show()
 end
+
 
 function showFavorites()
     local items = FavoritesManager.getAll()
@@ -2445,7 +2718,83 @@ function showDeleteSeriesFavoriteDialog()
     dlg.show()
 end
 
+
+function showDownloads()
+    local downloads = DownloadsManager.getAll()
+    if #downloads == 0 then
+        speak("لا توجد ملفات محملة")
+        return
+    end
+
+    local names = {}
+    for i, d in ipairs(downloads) do
+        local typeIcon = "⬇️ "
+        if d.type == "movie" then typeIcon = "📺 "
+        elseif d.type == "series" then typeIcon = "🎞️ " end
+        table.insert(names, typeIcon .. d.name)
+    end
+
+    local dlg = LuaDialog(activity)
+    dlg.setTitle("⬇️ التنزيلات (" .. #downloads .. ")")
+    dlg.setItems(names)
+    dlg.setOnItemClickListener(function(l,v,p,i)
+        dlg.dismiss()
+        local selected = downloads[i]
+        if selected then
+            local path = selected.localPath or (DOWNLOAD_DIR .. "/" .. selected.id .. ".mp4")
+            local playItem = {
+                name = selected.name,
+                url = "file://" .. path,
+                id = selected.id,
+                type = selected.type,
+                localPath = path
+            }
+            playContent({playItem}, 1)
+        end
+    end)
+    dlg.setButton("حذف ملف", function()
+        showDeleteDownloadDialog()
+    end)
+    dlg.setNeutralButton("🏠 الرئيسية", function() main() end)
+    dlg.show()
+end
+
+function showDeleteDownloadDialog()
+    local downloads = DownloadsManager.getAll()
+    if #downloads == 0 then return end
+
+    local names = {}
+    for i, d in ipairs(downloads) do table.insert(names, d.name) end
+
+    local dlg = LuaDialog(activity)
+    dlg.setTitle("اختر ملف لحذفه")
+    dlg.setItems(names)
+    dlg.setOnItemClickListener(function(l,v,p,i)
+        local item = downloads[i]
+        if item then
+            DownloadsManager.remove(item.id)
+            speak("تم حذف الملف")
+            showDownloads()
+        end
+    end)
+    dlg.setNeutralButton("🏠 الرئيسية", function() main() end)
+    dlg.setNegativeButton("🔙 رجوع", nil)
+    dlg.show()
+end
+
+function main_update_downloads_badge()
+    if btn_downloads_badge then
+        if DownloadQueue.isDownloading then
+            btn_downloads_badge.setVisibility(View.VISIBLE)
+            btn_downloads_badge.setText("جاري التنزيل (" .. #DownloadQueue.queue .. ")")
+        else
+            btn_downloads_badge.setVisibility(View.GONE)
+        end
+    end
+end
+
 function showHistory()
+
     local history = HistoryManager.getAll()
     
     if #history == 0 then
@@ -2758,25 +3107,170 @@ function getMovieCategories()
     end)
 end
 
+
 function showEpisodesList(episodes_data, seriesId, seriesName)
     local playlist = preparePlaylist(episodes_data, "series", seriesId, seriesName)
-    local names = {}
-    for _, v in ipairs(playlist) do 
-        local favIcon = FavoritesManager.isFavorite(v.id) and " ❤️" or ""
-        table.insert(names, v.name .. favIcon) 
+
+    local selectedEpisodes = {}
+
+    local layout = {
+        LinearLayout,
+        orientation = "vertical",
+        layout_width = "fill",
+        layout_height = "fill",
+        backgroundColor = COL_BG,
+        {
+            LinearLayout,
+            orientation = "horizontal",
+            layout_width = "fill",
+            padding = "8dp",
+            backgroundColor = "#161616",
+            {
+                Button,
+                text = "تحديد الكل",
+                layout_weight = "1",
+                textColor = COL_TEXT_PRI,
+                backgroundColor = "#44000000",
+                onClick = function()
+                    for i=1, #playlist do
+                        selectedEpisodes[i] = true
+                        if adapter_data and adapter_data[i] then adapter_data[i].ep_check = true end
+                    end
+                    if ep_list_adapter then ep_list_adapter.notifyDataSetChanged() end
+                end
+            },
+            {
+                Button,
+                text = "إلغاء التحديد",
+                layout_weight = "1",
+                textColor = COL_TEXT_PRI,
+                backgroundColor = "#44000000",
+                onClick = function()
+                    for i=1, #playlist do
+                        selectedEpisodes[i] = false
+                        if adapter_data and adapter_data[i] then adapter_data[i].ep_check = false end
+                    end
+                    if ep_list_adapter then ep_list_adapter.notifyDataSetChanged() end
+                end
+            }
+        },
+        {
+            ListView,
+            id = "ep_list",
+            layout_width = "fill",
+            layout_weight = "1",
+            dividerHeight = "0"
+        },
+        {
+            LinearLayout,
+            orientation = "horizontal",
+            layout_width = "fill",
+            padding = "16dp",
+            backgroundColor = "#161616",
+            {
+                Button,
+                text = "▶️ تشغيل المحدد",
+                layout_weight = "1",
+                textColor = COL_TEXT_PRI,
+                backgroundColor = COL_ACCENT_START,
+                onClick = function()
+                    local toPlay = {}
+                    for i, ep in ipairs(playlist) do
+                        if selectedEpisodes[i] then table.insert(toPlay, ep) end
+                    end
+                    if #toPlay > 0 then
+                        if episodes_dlg then episodes_dlg.dismiss() end
+                        playContent(toPlay, 1)
+                    else
+                        speak("يرجى تحديد حلقة واحدة على الأقل")
+                    end
+                end
+            },
+            { Space, layout_width="8dp" },
+            {
+                Button,
+                text = "⬇️ تنزيل المحدد",
+                layout_weight = "1",
+                textColor = COL_TEXT_PRI,
+                backgroundColor = COL_ACCENT_START,
+                onClick = function()
+                    local toDownload = {}
+                    for i, ep in ipairs(playlist) do
+                        if selectedEpisodes[i] then table.insert(toDownload, ep) end
+                    end
+                    if #toDownload > 0 then
+                        if episodes_dlg then episodes_dlg.dismiss() end
+                        DownloadQueue.enqueue(toDownload)
+                    else
+                        speak("يرجى تحديد حلقة واحدة على الأقل")
+                    end
+                end
+            }
+        }
+    }
+
+    episodes_dlg = LuaDialog(activity)
+    episodes_dlg.setTitle("اختر الحلقات")
+    episodes_dlg.setView(loadlayout(layout))
+
+    local item_layout = {
+        LinearLayout,
+        orientation = "horizontal",
+        layout_width = "fill",
+        padding = "16dp",
+        gravity = "center_vertical",
+        {
+            CheckBox,
+            id = "ep_check",
+            focusable = false,
+            clickable = false
+        },
+        {
+            TextView,
+            id = "ep_title",
+            textColor = COL_TEXT_PRI,
+            textSize = "16sp",
+            layout_marginLeft = "12dp",
+            layout_weight = "1"
+        },
+        {
+            TextView,
+            id = "ep_status",
+            textColor = COL_ACCENT_START,
+            textSize = "12sp"
+        }
+    }
+
+    adapter_data = {}
+    for i, item in ipairs(playlist) do
+        local statusText = ""
+        if DownloadsManager.isDownloaded(item.id) then
+            statusText = "⬇️ محملة"
+        end
+        table.insert(adapter_data, {
+            ep_title = item.name,
+            ep_check = false,
+            ep_status = statusText
+        })
     end
     
-    local dlg = LuaDialog(activity)
-    dlg.setTitle("الحلقات")
-    dlg.setItems(names)
-    dlg.setOnItemClickListener(function(l,v,p,i) 
-        dlg.dismiss()
-        playContent(playlist, i)
+    ep_list_adapter = LuaAdapter(activity, adapter_data, item_layout)
+    ep_list.setAdapter(ep_list_adapter)
+
+    ep_list.setOnItemClickListener(function(parent, view, position, id)
+        local idx = position + 1
+        selectedEpisodes[idx] = not selectedEpisodes[idx]
+        adapter_data[idx].ep_check = selectedEpisodes[idx]
+        ep_list_adapter.notifyDataSetChanged()
+        local item = playlist[idx]
+        if selectedEpisodes[idx] then speak("تم تحديد " .. item.name) else speak("تم إلغاء تحديد " .. item.name) end
     end)
-    dlg.setNeutralButton("🏠 الرئيسية", function() main() end)
-    dlg.setNegativeButton("🔙 رجوع", nil)
-    dlg.show()
+
+    episodes_dlg.setNeutralButton("🏠 الرئيسية", function() main() end)
+    episodes_dlg.setNegativeButton("🔙 رجوع", nil)
+    episodes_dlg.show()
 end
+
 
 function getSeriesEpisodes(series_id, series_name)
     speak("تحميل المواسم...")
@@ -3221,10 +3715,24 @@ function main()
                 visibility = (#continueWatchingList > 0 and View.VISIBLE or View.GONE)
             },
 
+
             -- Library Section
             { TextView, text="المكتبة والأدوات", textSize="22sp", Typeface=Typeface.DEFAULT_BOLD, textColor=COL_TEXT_PRI, layout_marginBottom="16dp" },
+
             {
-                LinearLayout, orientation="horizontal", layout_width="fill", layout_height="100dp", layout_marginBottom="24dp",
+                Button,
+                id = "btn_downloads_badge",
+                text = "جاري التنزيل...",
+                textColor = "#FFFFFF",
+                backgroundColor = "#2E7D32",
+                layout_width = "fill",
+                layout_marginBottom = "16dp",
+                visibility = View.GONE,
+                onClick = function() DownloadQueue.showProgressDialog() end
+            },
+
+            {
+                LinearLayout, orientation="horizontal", layout_width="fill", layout_height="100dp", layout_marginBottom="16dp",
                 {
                     LinearLayout, layout_width="0dp", layout_weight="1", layout_height="fill", layout_marginRight="8dp",
                     id="btn_fav", gravity="center", orientation="vertical",
@@ -3250,6 +3758,20 @@ function main()
                     { TextView, text="مسلسلاتي", textSize="14sp", textColor=COL_TEXT_PRI, importantForAccessibility=2 }
                 }
             },
+            {
+                LinearLayout, orientation="horizontal", layout_width="fill", layout_height="100dp", layout_marginBottom="24dp",
+                {
+                    LinearLayout, layout_width="0dp", layout_weight="1", layout_height="fill", layout_marginRight="8dp",
+                    id="btn_downloads", gravity="center", orientation="vertical",
+                    focusable=true, clickable=true, contentDescription="الملفات المحملة للعمل بدون إنترنت",
+                    onClick=function() showDownloads() end,
+                    { TextView, text="⬇️", textSize="26sp", layout_marginBottom="4dp", importantForAccessibility=2 },
+                    { TextView, text="التنزيلات", textSize="14sp", textColor=COL_TEXT_PRI, importantForAccessibility=2 }
+                },
+                { Space, layout_weight="1" },
+                { Space, layout_weight="1" }
+            },
+
 
             {
                 Button, text="تسجيل خروج", layout_width="fill", layout_marginTop="32dp",
@@ -3283,6 +3805,9 @@ function main()
     if btn_fav then btn_fav.setBackground(getClickableDrawable(COL_SURFACE, COL_SURFACE_PRESS, 24)) end
     if btn_hist then btn_hist.setBackground(getClickableDrawable(COL_SURFACE, COL_SURFACE_PRESS, 24)) end
     if btn_myseries then btn_myseries.setBackground(getClickableDrawable(COL_SURFACE, COL_SURFACE_PRESS, 24)) end
+    if btn_downloads then btn_downloads.setBackground(getClickableDrawable(COL_SURFACE, COL_SURFACE_PRESS, 24)) end
+
+    main_update_downloads_badge()
 
     if subs_card then
         local gd = GradientDrawable()
